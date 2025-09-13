@@ -121,12 +121,12 @@ if __name__ == "__main__":
     ps.add_argument("-p", "--params", type=str, default=",".join(cfg.elemente_archiv_neu))
     ps.add_argument("-c", "--cities", type=str, default=",".join(cfg.stadtnamen))
     ps.add_argument("-u", "--users", type=str, default=",".join(cfg.auswertungsteilnehmer))
+    ps.add_argument("-d", "--days", type=str, default=",".join(cfg.auswertungstage))
     ps.add_argument("-v", "--verbose", action="store_true")
     ps = ps.parse_args()
-    datum_von = ps.von
-    datum_bis = ps.bis
-    tdate_von = date_2_index(datum_von)
-    tdate_bis = date_2_index(datum_bis)
+
+    tdate_von = date_2_index(ps.von)
+    tdate_bis = date_2_index(ps.bis)
     wochenendtage = get_list_of_weekends(tdate_von, tdate_bis)
 
     elemente_namen = [el for el in ps.params.split(",") if el in cfg.elemente_archiv_neu]
@@ -151,7 +151,6 @@ if __name__ == "__main__":
         day_name=ps.days
     else:
         day_name = "All"  # feste Vereinfachung
-
 # ------------------- Daten kombinieren -------------------#
     combined_data = {}
     for city in obs_data:
