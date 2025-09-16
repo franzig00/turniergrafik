@@ -107,8 +107,17 @@ def get_forecast_data(staedte, tage, elemente, users):
     return forecast_data   
 
 
-def get_max_label(r):
-    return str(r[1]) if len(r) > 1 else str(r[0])
+# ------------------- Klassenmittel -------------------#
+def calc_class_means(intervals):
+    means = []
+    for r in intervals:
+        with localcontext() as ctx:
+            ctx.prec = 12
+            ctx.rounding = ROUND_HALF_EVEN
+            a, b = Decimal(str(r[0])), Decimal(str(r[1]))
+            mean = (a + b) / 2
+        means.append(mean)
+    return means
 
 # ------------------- Hauptprogramm -------------------
 if __name__ == "__main__":
@@ -141,16 +150,8 @@ if __name__ == "__main__":
     obs_data = get_obs_data(staedte, wochenendtage, elemente)
     forecast_data = get_forecast_data(staedte, wochenendtage, elemente, users)
 
-    param_to_si_map = {name: unit for name, unit in zip(
-        cfg.elemente_archiv_neu,
-        cfg.elemente_einheiten_neu
-    )}
-    if ps.days=="Sat":
-        day_name = ps.days
-    elif ps.days=="Sun":
-        day_name=ps.days
-    else:
-        day_name = "All"  # feste Vereinfachung
+    param_to_si_map = {name: unit for name, unit in zip(cfg.elemente_archiv_neu, cfg.elemente_einheiten_neu)}
+    day_name = ps.days if ps.days in ["Sat","Sun"] else "All"
 # ------------------- Daten kombinieren -------------------#
     combined_data = {}
     for city in obs_data:
@@ -175,288 +176,139 @@ if __name__ == "__main__":
 
 
 for param in elemente_namen:
-    obs_ranges_def = intervals_cfg.get(param, [])
-    for_ranges_def = intervals_cfg.get(param, [])
+        obs_ranges_def = intervals_cfg.get(param, [])
+        for_ranges_def = intervals_cfg.get(param, [])
+        if not obs_ranges_def or not for_ranges_def:
+            print(f"Skipping {param} due to missing ranges.")
+            continue
 
-    if not obs_ranges_def or not for_ranges_def:
-        print(f"Skipping {param} due to missing ranges.")
-        continue
-    si = param_to_si_map.get(param, "")
+        obs_class_means = calc_class_means(obs_ranges_def)
+        for_class_means = calc_class_means(for_ranges_def)
 
-    # Alle Städte gleichzeitig in einem File
-    all_city_str = "_".join(re.sub(r'[\\/:"*?<>|\s]+', '_', c) for c in combined_data.keys())
-    outdir = os.path.join("distribution_outputs", all_city_str)
-    os.makedirs(outdir, exist_ok=True)
-
-    # Alle Nutzer gleichzeitig
-    users_set = set(u for city_data in combined_data.values() for betdate, data in city_data.items() for u in data.get('f', {}).keys())
-    user_str = "_".join(re.sub(r'[\\/:"*?<>|\s]+', '_', u) for u in users_set)
-
-    # ------------------- Daten sammeln -------------------
-    counts = defaultdict(int)
-    values_by_bin = defaultdict(list)
-    obs_missing = []
-    for_missing = []
-
-    for city, city_data in combined_data.items():
-        for betdate, data in city_data.items():
-            obs_vals_list = data["o"].get(param, [])
-            valid_obs = [v for v in obs_vals_list if v is not None]
-            if not valid_obs:
-                obs_missing.append((city, betdate, obs_vals_list))
-                continue
-
-            obs_max = max(valid_obs)
-            obs_idx, _ = get_interval(obs_max, obs_ranges_def)
-            obs_range_key = tuple(obs_ranges_def[obs_idx])
-            if not obs_range_key:
-                continue
-
-            for user in users_set:
-                user_fvals = data['f'].get(user)
-                if not user_fvals:
-                    for_missing.append((city, betdate, user))
+        counts = defaultdict(int)
+        values_by_bin = defaultdict(list)
+        for city, city_data in combined_data.items():
+            for betdate, data in city_data.items():
+                obs_vals_list = data['o'].get(param, [])
+                valid_obs = [v for v in obs_vals_list if v is not None]
+                if not valid_obs:
                     continue
+                obs_max = max(valid_obs)
+                obs_idx, _ = get_interval(obs_max, obs_ranges_def)
+                if obs_idx is None: continue
+                obs_range_key = tuple(obs_ranges_def[obs_idx])
 
-                fcast_val = user_fvals.get(param)
-                if fcast_val is None:
-                    for_missing.append((city, betdate, user))
-                    continue
-
-                f_idx, _ = get_interval(fcast_val, for_ranges_def)
-                for_range_key = tuple(for_ranges_def[f_idx])
-
-                counts[(tuple(obs_range_key), tuple(for_range_key))] += 1
-                values_by_bin[(obs_range_key, for_range_key)].append((obs_max, fcast_val))
+                for user, fvals in data['f'].items():
+                    fcast_val = fvals.get(param)
+                    if fcast_val is None: continue
+                    f_idx, _ = get_interval(fcast_val, for_ranges_def)
+                    if f_idx is None: continue
+                    for_range_key = tuple(for_ranges_def[f_idx])
+                    counts[(obs_range_key, for_range_key)] += 1
+                    values_by_bin[(obs_range_key, for_range_key)].append((obs_max, fcast_val))
 
     if ps.verbose:
         print(f"{param} Obs outside ranges:", obs_missing)
         print(f"{param} For outside ranges:", for_missing)
 
-    # ------------------- DataFrame bauen -------------------
-    rows = [
-        {"Obs": str(obs_r[1]),
-         "For": str(for_r[1]),
-         "Count": counts.get((tuple(obs_r), tuple(for_r)), 0)}
-        for obs_r, for_r in product(obs_ranges_def, for_ranges_def)
-    ]
+    # ------------------- Klassenmittel -------------------#
+        n_rows = len(obs_ranges_def)
+        n_cols = len(for_ranges_def)
 
-    df_dist = pl.DataFrame(rows)
-    df_pivot = df_dist.pivot(values="Count", index="Obs", on="For", aggregate_function="sum")
+        # ------------------- Ausgabeverzeichnis ------------------- #
+        all_city_str = "_".join(re.sub(r'[\\/:"*?<>|\s]+', '_', c) for c in combined_data.keys())
+        outdir = os.path.join("distribution_outputs", all_city_str)
+        os.makedirs(outdir, exist_ok=True)
 
-    # Numerisch sortieren
-    df_pivot = df_pivot.with_columns(
-        pl.col("Obs").str.extract(r"([-+]?\d*\.?\d+)").cast(pl.Float64).alias("_obs_sort")
-    ).sort("_obs_sort").drop("_obs_sort")
+        users_set = set(u for city_data in combined_data.values()
+                        for betdate, data in city_data.items()
+                        for u in data.get('f', {}).keys())
+        user_str = "_".join(re.sub(r'[\\/:"*?<>|\s]+', '_', u) for u in users_set)
 
-    # ------------------- Zeilen- und Spaltenmittel berechnen -------------------
-    # ------------------- Zeilen- und Spaltenmittel berechnen -------------------
-    import numpy as np
-    import openpyxl
-    from openpyxl.styles import PatternFill
+        outfile_xlsx = os.path.join(outdir, f"distribution_{all_city_str}_{param}_{user_str}_{day_name}.xlsx")
+        wb = openpyxl.Workbook()
+        ws = wb.active
 
-    # df_pivot: schon Pivot mit Counts erstellt
-    # values_by_bin: dict mit Listen von (obs, forecas
-
-    n_rows = len(obs_ranges_def)
-    n_cols = len(for_ranges_def)
-
-    # 1) Mittelwerte berechnen
-    # ------------------- Zeilenmittel berechnen -------------------
-        # Zeilenmittel
-    # Zeilenmittel
-    row_means = []
-    for obs_r in obs_ranges_def:
-        sum_vals = 0
-        count_vals = 0
-        for for_r in for_ranges_def:
-            vals = values_by_bin.get((tuple(obs_r), tuple(for_r)), [])
-            sum_vals += sum(o for o, _ in vals)  # Observationen
-            count_vals += len(vals)
-        row_mean = sum_vals / count_vals if count_vals else 0.0
-        row_means.append(row_mean)
-
-    # Spaltenmittel
-    col_means = []
-    for for_r in for_ranges_def:
-        sum_vals = 0
-        count_vals = 0
-        for obs_r in obs_ranges_def:
-            vals = values_by_bin.get((tuple(obs_r), tuple(for_r)), [])
-            sum_vals += sum(f for _, f in vals)  # Forecasts
-            count_vals += len(vals)
-        col_mean = sum_vals / count_vals if count_vals else 0.0
-        col_means.append(col_mean)
-
-
-
-    overall_mean = np.mean([o for o, f in sum(values_by_bin.values(), [])]) if values_by_bin else 0.0
-
-    # ---------------- Excel ----------------
-    # ---------------- Excel ----------------
-    # ---------------- Excel ----------------
-    outfile_xlsx = os.path.join(outdir, f"distribution_{all_city_str}_{param}_{user_str}_{day_name}.xlsx")
-    # Excel
-    blue_fill = PatternFill(start_color="ADD8E6", end_color="ADD8E6", fill_type="solid")
-    orchid_fill = PatternFill(start_color="DA70D6", end_color="DA70D6", fill_type="solid")
-
-    # Header
-    import openpyxl
-    from openpyxl.styles import PatternFill
-
-    # Workbook erstellen
-    wb = openpyxl.Workbook()
-    ws = wb.active
-    ws.cell(row=1, column=1, value="Obs \\ For")
-    for j, for_r in enumerate(for_ranges_def):
-        ws.cell(row=1, column=j+2, value=str(for_r[1]))
-
-    # Daten und Zeilensummen
-    for i, obs_r in enumerate(obs_ranges_def):
-        ws.cell(row=i+2, column=1, value=str(obs_r[1]))
+        # ------------------- Kopfzeilen ------------------- #
+        ws.cell(row=1, column=1, value="Kl")
         for j, for_r in enumerate(for_ranges_def):
-            count = len(values_by_bin.get((tuple(obs_r), tuple(for_r)), []))
-            ws.cell(row=i+2, column=j+2, value=count)
-            # Hauptdiagonale blau
-            if i == j:
-                ws.cell(row=i+2, column=j+2).fill = blue_fill
-        # Zeilensumme rechts
-        row_sum = sum(len(values_by_bin.get((tuple(obs_r), tuple(for_r)), [])) for for_r in for_ranges_def)
-        ws.cell(row=i+2, column=n_cols+2, value=row_sum)
+            ws.cell(row=1, column=j+2, value=str(for_r[1]))
 
-    # Spaltensummen unten
-    for j, for_r in enumerate(for_ranges_def):
-        col_sum = sum(len(values_by_bin.get((tuple(obs_r), tuple(for_r)), [])) for obs_r in obs_ranges_def)
-        ws.cell(row=n_rows+2, column=j+2, value=col_sum)
-    # Unterste rechte Zelle (Kreuzsumme) orchid
-    total_sum = sum(len(values_by_bin.get((tuple(obs_r), tuple(for_r)), []))
-                    for obs_r in obs_ranges_def for for_r in for_ranges_def)
-    ws.cell(row=n_rows+2, column=n_cols+2, value=total_sum)
-    ws.cell(row=n_rows+2, column=n_cols+2).fill = orchid_fill
-    
-    # Spaltenüberschrift für Zeilenmittel
-    # Spaltenüberschrift für Zeilenmittel
-    ws.cell(row=1, column=n_cols+3, value="Row_Mean")
-    # Prüfen, ob der aktuelle Parameter RR ist
-    #round_flag = param == "RR"  # oder ggf. param_to_si_map[param] == "mm"
+        blue_fill = PatternFill(start_color="ADD8E6", end_color="ADD8E6", fill_type="solid")
+        orchid_fill = PatternFill(start_color="DA70D6", end_color="DA70D6", fill_type="solid")
 
+        # ------------------- Matrix füllen ------------------- #
+        matrix_counts = [[len(values_by_bin.get((tuple(obs_r), tuple(for_r)), []))
+                          for for_r in for_ranges_def] for obs_r in obs_ranges_def]
 
-    # Zeilenmittel rechts neben Row_Sum
-    for i, obs_r in enumerate(obs_ranges_def):
-        ws.cell(row=i+2, column=n_cols+3, value=row_means[i])
+        matrix_total_fc = [[sum(f for _, f in values_by_bin.get((tuple(obs_r), tuple(for_r)), []))
+                            for for_r in for_ranges_def] for obs_r in obs_ranges_def]
 
-    # Spaltenmittel unten unter Col_Sum
-    for j, for_r in enumerate(for_ranges_def):
-        ws.cell(row=n_rows+3, column=j+2, value=col_means[j])
+        # ------------------- Zeilenwerte eintragen ------------------- #
+        for i, obs_r in enumerate(obs_ranges_def):
+            ws.cell(row=i+2, column=1, value=str(obs_r[1]))  # Obs-Klasse
+            row_vals = matrix_counts[i]
 
-    # Gesamtdurchschnitt unten rechts
-    #ws.cell(row=n_rows+3, column=n_cols+3, value=overall_mean)
-    #ws.cell(row=n_rows+3, column=n_cols+3).fill = orchid_fill
-    # Prüfen, ob der aktuelle Parameter RR ist
-    round_flag = param in ["RR1", "RR24"]
+            for j, count in enumerate(row_vals):
+                cell = ws.cell(row=i+2, column=j+2, value=count)
+                if i == j:
+                    cell.fill = blue_fill
 
-    # Zeilenmittel rechts neben Row_Sum
-    for i, mean in enumerate(row_means):
-        if round_flag and mean < 1:
-            val = round(mean, 2)
-        else:
-            val = round(mean, 1)
-        ws.cell(row=i+2, column=n_cols+3, value=val)
+            # Row_Sum & Row_Mean
+            row_sum = sum(row_vals)
+            row_mean = round(sum(row_vals)/len(row_vals), 2) if row_vals else 0.0
+            ws.cell(row=i+2, column=n_cols+2, value=row_sum)
+            #ws.cell(row=i+2, column=n_cols+3, value=row_mean)
 
-    # Spaltenmittel unten unter Col_Sum
-    for j, mean in enumerate(col_means):
-        if round_flag and mean < 1:
-            val = round(mean, 2)
-        else:
-            val = round(mean, 1)
-        ws.cell(row=n_rows+3, column=j+2, value=val)
+            # MFc pro Obs-Klasse
+            total_fc_obsclass = [f for for_r in for_ranges_def for _, f in values_by_bin.get((tuple(obs_r), tuple(for_r)), [])]
+            if total_fc_obsclass:
+                if param in ["RR1", "RR24"] and sum(total_fc_obsclass)/len(total_fc_obsclass) < 1:
+                    mean_fc_obsclass = round(sum(total_fc_obsclass)/len(total_fc_obsclass), 2)
+                else:
+                    mean_fc_obsclass = round(sum(total_fc_obsclass)/len(total_fc_obsclass), 1)
+            else:
+                mean_fc_obsclass = "NIL"
+            ws.cell(row=i+2, column=n_cols+7, value=mean_fc_obsclass)
 
-    # Gesamtmittel unten rechts
-    if round_flag and overall_mean < 1:
-        val = round(overall_mean, 2)
-    else:
-        val = round(overall_mean, 1)
-    #ws.cell(row=n_rows+3, column=n_cols+3, value=val)
-    #ws.cell(row=n_rows+3, column=n_cols+3).fill = orchid_fill
+            # MOb pro Obs-Klasse
+            obs_vals_in_class = [o for for_r in for_ranges_def for o, _ in values_by_bin.get((tuple(obs_r), tuple(for_r)), [])]
+            if obs_vals_in_class:
+                mob = round(sum(obs_vals_in_class)/len(obs_vals_in_class), 2)
+            else:
+                mob = "NIL"
+                
+            if total_fc_obsclass:
+                forc = round(sum(obs_vals_in_class)/len(obs_vals_in_class), 2)
+            else:
+                forc = "NIL"
+            ws.cell(row=i+2, column=n_cols+8, value=forc)
 
-    # Gesamtmittel unten rechts
-    #val = round(overall_mean, 2) if round_flag else overall_mean
-    #ws.cell(row=n_rows+3, column=n_cols+3, value=val)
-    #ws.cell(row=n_rows+3, column=n_cols+3).fill = orchid_fill
+        # ------------------- Spaltenwerte eintragen ------------------- #
+        for j, for_r in enumerate(for_ranges_def):
+            col_vals = [matrix_counts[i][j] for i in range(n_rows)]
+            col_sum = sum(col_vals)
+            col_mean = round(sum(col_vals)/len(col_vals), 2) if col_vals else 0.0
 
+            ws.cell(row=n_rows+2, column=j+2, value=col_sum)      # Col_Sum
+           # ws.cell(row=n_rows+3, column=j+2, value=col_mean)     # Col_Mean
 
-    # Spaltenüberschrift für Zeilensumme
-    ws.cell(row=1, column=n_cols+2, value="Row_Sum")
-    # Spaltenüberschrift für Col_Sum unten links
-    ws.cell(row=n_rows+2, column=1, value="Col_Sum")
-    # Spaltenüberschrift für Col_Mean unten links
-    ws.cell(row=n_rows+3, column=1, value="Col_Mean")
+        # ------------------- Gesamt-Summe ------------------- #
+        total_sum = sum(sum(row) for row in matrix_counts)
+        ws.cell(row=n_rows+2, column=n_cols+2, value=total_sum).fill = orchid_fill
 
+        # ------------------- Kopfzeilen für Zusatzzeilen/Spalten ------------------- #
+        ws.cell(row=n_rows+2, column=1, value="Row_Sum")
+        #ws.cell(row=n_rows+3, column=1, value="Row_Mean")
+        ws.cell(row=1, column=n_cols+2, value="Col_Sum")
+       # ws.cell(row=1, column=n_cols+3, value="Col_Mean")
+        ws.cell(row=1, column=n_cols+7, value="MFc")
+        #ws.cell(row=1, column=n_cols+5, value="MOb")
+        ws.cell(row=1, column=n_cols+8, value="MOb")
 
-    wb.save(outfile_xlsx)
-
-   # TXT
-    txt_outfile = os.path.join(outdir, f"distribution_{all_city_str}_{param}_{user_str}_{day_name}.txt")
-    obs_col_key = "Obs\\For"
-    row_mean_key = "Row_Mean"
-
-    # Spaltenbreiten vorbereiten
-    columns = [str(for_r[1]) for for_r in for_ranges_def] + ["Row_Sum"]
-    col_widths_txt = {c: max(len(c), 4) for c in columns}
-    col_widths_txt[obs_col_key] = max(len(obs_col_key), 9)
-    col_widths_txt[row_mean_key] = max(len(row_mean_key), 6)
-
-    # Header
-    txt_lines = []
-    header = ["Obs\\For"] + [str(for_r[1]) for for_r in for_ranges_def] + ["Row_Sum", "Row_Mean"]
-    txt_lines.append("  ".join(f"{h:>{col_widths_txt.get(h,h)}}" for h in header))
-    txt_lines.append("  ".join("-"*col_widths_txt.get(h,h) for h in header))
-
-    # Zeilen: Counts + Zeilensumme + Zeilenmittel
-    for i, obs_r in enumerate(obs_ranges_def):
-        row_vals = [len(values_by_bin.get((tuple(obs_r), tuple(for_r)), [])) for for_r in for_ranges_def]
-        row_sum = sum(row_vals)
-        row_mean = row_means[i]
-        if param in ["RR1","RR24"] and row_mean < 1:
-            row_mean = round(row_mean, 2)
-        else:
-            row_mean = round(row_mean, 1)
-        row_vals.append(row_sum)
-        row_vals.append(row_mean)
-        line = [f"{str(obs_r[1]):>{col_widths_txt[obs_col_key]}}"] + \
-               [f"{v:>{col_widths_txt[c]}}" for v, c in zip(row_vals, columns + [row_mean_key])]
-        txt_lines.append("  ".join(line))
-
-    # Spaltensummen unten (Counts)
-    col_sums = [sum(len(values_by_bin.get((tuple(obs_r), tuple(for_ranges_def[j])), [])) for obs_r in obs_ranges_def)
-                for j in range(len(for_ranges_def))]
-    row_sum_total = sum(col_sums)
-    col_sums.append(row_sum_total)
-    col_sums.append("")  # Platz für Row_Mean-Spalte
-    line = [f"{'Col_Sum':>{col_widths_txt[obs_col_key]}}"] + \
-           [f"{s:>{col_widths_txt[c]}}" for s, c in zip(col_sums, columns + [row_mean_key])]
-    txt_lines.append("  ".join(line))
-
-    # Spaltenmittel unten (Mittelwerte)
-    col_means_rounded = []
-    for mean in col_means:
-        if param in ["RR1","RR24"] and mean < 1:
-            col_means_rounded.append(round(mean, 2))
-        else:
-            col_means_rounded.append(round(mean, 1))
-    overall_mean_rounded = round(overall_mean, 2) if (param in ["RR1","RR24"] and overall_mean < 1) else round(overall_mean, 1)
-
-    line = [f"{'Col_Mean':>{col_widths_txt[obs_col_key]}}"] + \
-           [f"{m:>{col_widths_txt[c]}}" for m, c in zip(col_means_rounded, columns)] + \
-           [f"{overall_mean_rounded:>{col_widths_txt[row_mean_key]}}"]
-    txt_lines.append("  ".join(line))
-
-    # TXT speichern
-    with open(txt_outfile, "w", encoding="utf-8") as f:
-        f.write("\n".join(txt_lines))
-    print(f"TXT table saved: {txt_outfile}")
-
-
+        # ------------------- Speichern ------------------- #
+        wb.save(outfile_xlsx)
+        print(f"Excel table saved: {outfile_xlsx}")
 
 
     # --- ASCII Export ---
