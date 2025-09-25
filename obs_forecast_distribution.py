@@ -515,10 +515,8 @@ for param in elemente_namen:
         plt.savefig(plot_file_svg)
         plt.close(fig)
         print(f"Windrichtungsplot gespeichert für {param}")
-
-        # hier: continue, damit keine Scatterplots/Heatmaps etc. für dd12 kommen
         print(f"Die Anzahl der bins ist: {n_bins}")
-        break
+        continue
 
 
         
@@ -599,7 +597,7 @@ for param in elemente_namen:
             ax.xaxis.set_major_locator(LogLocator(base=10.0, subs=(1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0, 8.0, 9.0, 10.0), numticks=10))
             ax.yaxis.set_major_locator(LogLocator(base=10.0, subs=(1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0, 8.0, 9.0, 10.0), numticks=10))
 
-        # 45° Linie Obs=Forecast
+        # Ursprungsgerrade Obs=Forecast
         xlim = ax.get_xlim()
         ylim = ax.get_ylim()
         ax.plot([xlim[0], xlim[1]], [xlim[0], xlim[1]], 'k--', label="Obs = Forecast")
@@ -608,10 +606,10 @@ for param in elemente_namen:
         y_start = intercept + slope * xlim[0]
         y_end   = intercept + slope * xlim[1]
         ax.plot([xlim[0], xlim[1]], [y_start, y_end],
-                'r-', label=f"y = {slope:.2f}x + {intercept:.2f}, R²={r_value**2:.2f}")
+                'r-', label=rf"y = {slope:.2f}x + {intercept:.2f}, $R^2={r_value**2:.2f}$")
 
 
-        # Achsenbeschriftung & Titel
+        # Achsenbeschriftung und Titel
         si_unit = param_to_si_map.get(param, "")
         ax.set_xlabel(f"Observation ({param}) [{si_unit}]")
         ax.set_ylabel(f"Forecast ({param}) [{si_unit}]")
