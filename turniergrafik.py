@@ -38,6 +38,7 @@ from global_functions import index_2_year, date_2_index, index_2_date, get_frida
 import pandas as pd
 import glob
 
+
 #----------------------------------------------------------------------------#
 # Setzen des Startzeitpuntes zur Messung der Laufzeit des Programms
 startTime = time.time()
@@ -907,49 +908,28 @@ for player in UserValueLists.keys():
     print("Turniertage mit fehlenden Spielern / Tipps:")
     print( sorted(faulty_dates) )
 
-# Alle txt-Dateien mit 2025-09-02_*years.txt einlesen. Mit glob wird jede txt-Datei dieser Form gefunden.
-files = glob.glob("2025-09-02_*years.txt") 
-results = []
-
-for f in files:
-    df = pd.read_csv(f, sep=r"\s+", engine="python", index_col=0)
-    df = df.T.reset_index().rename(columns={"index":"Datum"})              # Datum soll raus.
+# Alle txt-Dateien mit 2025-09-24_*years.txt einlesen. Mit glob wird jede txt-Datei dieser Form gefunden.
     
-    # Nur die gewünschten Modelle
-    df_sel = df[["Datum", "MSwr-EZ-MOS", "DWD-EZ-MOS"]].copy()
-    
-    
-    # Summen, Differenz, Quotient
-    df_sum = df_sel[["MSwr-EZ-MOS", "DWD-EZ-MOS"]].sum().to_frame().T       # .T heißt transponieren.
-    df_sum["Diff"] = df_sum["MSwr-EZ-MOS"] - df_sum["DWD-EZ-MOS"]
-    df_sum["Quo in %"] = df_sum["MSwr-EZ-MOS"] / df_sum["DWD-EZ-MOS"] * 100
-    
-    # Zusatzinfo
-    var_name = os.path.basename(f).split("_")[3]       # Trennzeichen an der Position 4 bei den später gespeicherten Dateien
-    city = os.path.basename(f).split("_")[2]           # Trennzeichen an der Position 3 bei den später gespeicherten Dateien
-    df_sum["Variable"] = var_name
-    df_sum["Stadt"] = city
-    
-    # Spalten neu anordnen: Stadt, Tage, Variable zuerst
-    # Tage aus cfg 
-    tage_str = ", ".join(cfg.auswertungstage) if isinstance(cfg.auswertungstage, list) else cfg.auswertungstage
-    df_sum["Tage"] = tage_str
 
-    # Spalten neu anordnen
-    cols_order = ["Stadt", "Tage", "Variable", "MSwr-EZ-MOS", "DWD-EZ-MOS", "Diff", "Quo"]
-    df_sum = df_sum[cols_order]
-    results.append(df_sum)
+    files = glob.glob("2025-09-24_*years.txt")
+    results = []
+    for f in files:
+        df = pd.read_csv(f, sep=r"\s+", engine="python", index_col=0).T.reset_index().rename(columns={"index":"Datum"})
+        df_sel = df[["Datum", "MSwr-EZ-MOS", "DWD-EZ-MOS"]].copy()
+        df_sum = df_sel[["MSwr-EZ-MOS", "DWD-EZ-MOS"]].sum().to_frame().T
+        df_sum["Diff"] = df_sum["MSwr-EZ-MOS"] - df_sum["DWD-EZ-MOS"]
+        df_sum["Quo in %"] = df_sum["MSwr-EZ-MOS"] / df_sum["DWD-EZ-MOS"] * 100
+        var_name = os.path.basename(f).split("_")[3]
+        city = os.path.basename(f).split("_")[2]
+        df_sum["Variable"], df_sum["Stadt"] = var_name, city
+        df_sum["Tage"] = ", ".join(cfg.auswertungstage) if isinstance(cfg.auswertungstage, list) else cfg.auswertungstage
+        cols_order = ["Stadt", "Tage", "Variable", "MSwr-EZ-MOS", "DWD-EZ-MOS", "Diff", "Quo in %"]
+        results.append(df_sum[cols_order])
+    df_final = pd.concat(results, ignore_index=True).sort_values(by="Stadt").reset_index(drop=True)
+    df_final.to_csv("grafik_werte_neu.txt", index=False, sep=" ")
+    df_final.to_excel("grafik_werte_neu.xlsx", index=False)
+    print("Dateien gespeichert: grafik_werte_neu.txt und grafik_werte_neu.xlsx")
+    print(f"Gesamtlaufzeit: {time.time() - startTime:.2f} Sekunden")
 
-# Alles zusammenfassen
-df_final = pd.concat(results, ignore_index=True)
-
-# Nach der ersten Spalte "Stadt" alphabetisch sortieren
-df_final = df_final.sort_values(by="Stadt").reset_index(drop=True)
-
-# TXT speichern
-df_final.to_csv("grafik_werte.txt", index=False, sep=" ")
-
-# Excel speichern
-df_final.to_excel("grafik_werte.xlsx", index=False)
-
-print("Dateien sind so gespeichert gespeichert: grafik_werte.txt und grafik_werte.xlsx")
+# Hier muss man ggf. nachjustieren, wenn einen Tag wählt, da die ganze Tabelle (nicht die Werte), aber die Tage in der Tabelle dann nur auf den Tag oder 
+# die Tage gesetzt wird.
