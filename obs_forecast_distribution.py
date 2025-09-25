@@ -1,6 +1,6 @@
 import numpy as np
 import polars as pl
-from collections import defaultdict
+from collections import defaultdict, Counter
 from datetime import date
 from argparse import ArgumentParser as ap
 from global_functions import date_2_index, city_to_id, get_list_of_weekends
@@ -11,10 +11,15 @@ from itertools import product
 import os
 import re
 import matplotlib.pyplot as plt
-from scipy.stats import binned_statistic_2d
+from scipy.stats import binned_statistic_2d, linregress
 from decimal import Decimal, localcontext, ROUND_HALF_EVEN
 import openpyxl
 from openpyxl.styles import PatternFill
+import numpy as np
+import matplotlib.pyplot as plt
+from matplotlib.ticker import FixedLocator, LogLocator
+
+
 
 
 db = dbr.db()
@@ -121,9 +126,7 @@ def calc_class_means(intervals):
 
 # ------------------- Hauptprogramm -------------------
 if __name__ == "__main__":
-    # DB-Verbindung
     db = dbr.db()
-    # Kommandozeilenargumente
     ps = ap()
     ps.add_argument("--von", type=str, default=cfg.datum_neue_elemente)
     ps.add_argument("--bis", type=str, default=cfg.endtermin)
@@ -138,6 +141,15 @@ if __name__ == "__main__":
     tdate_bis = date_2_index(ps.bis)
     wochenendtage = get_list_of_weekends(tdate_von, tdate_bis)
 
+    # Samstag oder Sonntag auswählen
+    if ps.days == "Sat":
+        selected_days = [d for d in wochenendtage if index_2_date(d).weekday() == 6]
+    elif ps.days == "Sun":
+        selected_days = [d for d in wochenendtage if index_2_date(d).weekday() == 0]
+    else:
+        selected_days = wochenendtage
+
+
     elemente_namen = [el for el in ps.params.split(",") if el in cfg.elemente_archiv_neu]
     elemente = db.get_param_ids(elemente_namen).values()
     staedte = [city_to_id(city, cfg) for city in ps.cities.split(",")]
@@ -145,13 +157,13 @@ if __name__ == "__main__":
     users_dict = db.get_user_ids(user_logins)
     users_dict_swapped = {v: k for k, v in users_dict.items()}
     users = users_dict.values()
+    day_name = ps.days if ps.days in ["Sat","Sun"] else "All"
 
-    # Daten laden
+    # Daten laden – nur die ausgewählten Wochenendtage
     obs_data = get_obs_data(staedte, wochenendtage, elemente)
     forecast_data = get_forecast_data(staedte, wochenendtage, elemente, users)
-
     param_to_si_map = {name: unit for name, unit in zip(cfg.elemente_archiv_neu, cfg.elemente_einheiten_neu)}
-    day_name = ps.days if ps.days in ["Sat","Sun"] else "All"
+    
 # ------------------- Daten kombinieren -------------------#
     combined_data = {}
     for city in obs_data:
@@ -206,224 +218,422 @@ for param in elemente_namen:
                     for_range_key = tuple(for_ranges_def[f_idx])
                     counts[(obs_range_key, for_range_key)] += 1
                     values_by_bin[(obs_range_key, for_range_key)].append((obs_max, fcast_val))
+    
 
-    if ps.verbose:
-        print(f"{param} Obs outside ranges:", obs_missing)
-        print(f"{param} For outside ranges:", for_missing)
-
-    # ------------------- Klassenmittel -------------------#
-        n_rows = len(obs_ranges_def)
-        n_cols = len(for_ranges_def)
-
-        # ------------------- Ausgabeverzeichnis ------------------- #
-        all_city_str = "_".join(re.sub(r'[\\/:"*?<>|\s]+', '_', c) for c in combined_data.keys())
-        outdir = os.path.join("distribution_outputs", all_city_str)
-        os.makedirs(outdir, exist_ok=True)
-
-        users_set = set(u for city_data in combined_data.values()
-                        for betdate, data in city_data.items()
-                        for u in data.get('f', {}).keys())
-        user_str = "_".join(re.sub(r'[\\/:"*?<>|\s]+', '_', u) for u in users_set)
-
-        outfile_xlsx = os.path.join(outdir, f"distribution_{all_city_str}_{param}_{user_str}_{day_name}.xlsx")
-        wb = openpyxl.Workbook()
-        ws = wb.active
-
-        # ------------------- Kopfzeilen ------------------- #
-        ws.cell(row=1, column=1, value="Kl")
-        for j, for_r in enumerate(for_ranges_def):
-            ws.cell(row=1, column=j+2, value=str(for_r[1]))
-
-        blue_fill = PatternFill(start_color="ADD8E6", end_color="ADD8E6", fill_type="solid")
-        orchid_fill = PatternFill(start_color="DA70D6", end_color="DA70D6", fill_type="solid")
-
-        # ------------------- Matrix füllen ------------------- #
-        matrix_counts = [[len(values_by_bin.get((tuple(obs_r), tuple(for_r)), []))
-                          for for_r in for_ranges_def] for obs_r in obs_ranges_def]
-
-        matrix_total_fc = [[sum(f for _, f in values_by_bin.get((tuple(obs_r), tuple(for_r)), []))
-                            for for_r in for_ranges_def] for obs_r in obs_ranges_def]
-
-        # ------------------- Zeilenwerte eintragen ------------------- #
-        for i, obs_r in enumerate(obs_ranges_def):
-            ws.cell(row=i+2, column=1, value=str(obs_r[1]))  # Obs-Klasse
-            row_vals = matrix_counts[i]
-
-            for j, count in enumerate(row_vals):
-                cell = ws.cell(row=i+2, column=j+2, value=count)
-                if i == j:
-                    cell.fill = blue_fill
-
-            # Row_Sum & Row_Mean
-            row_sum = sum(row_vals)
-            row_mean = round(sum(row_vals)/len(row_vals), 2) if row_vals else 0.0
-            ws.cell(row=i+2, column=n_cols+2, value=row_sum)
-            #ws.cell(row=i+2, column=n_cols+3, value=row_mean)
-
-            # MFc pro Obs-Klasse
-            total_fc_obsclass = [f for for_r in for_ranges_def for _, f in values_by_bin.get((tuple(obs_r), tuple(for_r)), [])]
-            if total_fc_obsclass:
-                if param in ["RR1", "RR24"] and sum(total_fc_obsclass)/len(total_fc_obsclass) < 1:
-                    mean_fc_obsclass = round(sum(total_fc_obsclass)/len(total_fc_obsclass), 2)
-                else:
-                    mean_fc_obsclass = round(sum(total_fc_obsclass)/len(total_fc_obsclass), 1)
-            else:
-                mean_fc_obsclass = "NIL"
-            ws.cell(row=i+2, column=n_cols+7, value=mean_fc_obsclass)
-
-            # MOb pro Obs-Klasse
-            obs_vals_in_class = [o for for_r in for_ranges_def for o, _ in values_by_bin.get((tuple(obs_r), tuple(for_r)), [])]
-            if obs_vals_in_class:
-                mob = round(sum(obs_vals_in_class)/len(obs_vals_in_class), 2)
-            else:
-                mob = "NIL"
-                
-            if total_fc_obsclass:
-                forc = round(sum(obs_vals_in_class)/len(obs_vals_in_class), 2)
-            else:
-                forc = "NIL"
-            ws.cell(row=i+2, column=n_cols+8, value=forc)
-
-        # ------------------- Spaltenwerte eintragen ------------------- #
-        for j, for_r in enumerate(for_ranges_def):
-            col_vals = [matrix_counts[i][j] for i in range(n_rows)]
-            col_sum = sum(col_vals)
-            col_mean = round(sum(col_vals)/len(col_vals), 2) if col_vals else 0.0
-
-            ws.cell(row=n_rows+2, column=j+2, value=col_sum)      # Col_Sum
-           # ws.cell(row=n_rows+3, column=j+2, value=col_mean)     # Col_Mean
-
-        # ------------------- Gesamt-Summe ------------------- #
-        total_sum = sum(sum(row) for row in matrix_counts)
-        ws.cell(row=n_rows+2, column=n_cols+2, value=total_sum).fill = orchid_fill
-
-        # ------------------- Kopfzeilen für Zusatzzeilen/Spalten ------------------- #
-        ws.cell(row=n_rows+2, column=1, value="Row_Sum")
-        #ws.cell(row=n_rows+3, column=1, value="Row_Mean")
-        ws.cell(row=1, column=n_cols+2, value="Col_Sum")
-       # ws.cell(row=1, column=n_cols+3, value="Col_Mean")
-        ws.cell(row=1, column=n_cols+7, value="MFc")
-        #ws.cell(row=1, column=n_cols+5, value="MOb")
-        ws.cell(row=1, column=n_cols+8, value="MOb")
-
-        # ------------------- Speichern ------------------- #
-        wb.save(outfile_xlsx)
-        print(f"Excel table saved: {outfile_xlsx}")
+# ------------------- Excel-Export komplett (Counts + Summen + Bias) ------------------- #
 
 
-    # --- ASCII Export ---
-    asc_outfile = os.path.join(outdir, f"distribution_{all_city_str}_{param}_{user_str}_{day_name}.asc")
-    col_widths_asc = [5, 6, 6, 4]
-    headers = ["Kl", "MFc", "MOb", "#"]
-    asc_lines = ["  ".join(f"{h:>{w}}" for h, w in zip(headers, col_widths_asc)),
-                 "  ".join("-"*w for w in col_widths_asc)]
-    for obs_r in obs_ranges_def:
-        lower, upper = obs_r
-        combined_vals = []
-        for for_r in for_ranges_def:
-            combined_vals.extend(values_by_bin.get((tuple(obs_r), tuple(for_r)), []))
-        count = len(combined_vals)
-        mean_fc = sum(v for (_, v) in combined_vals) / count if count else 0.0
-        mean_obs = sum(o for (o, _) in combined_vals) / count if count else 0.0
-        asc_lines.append("  ".join([
-            f"{upper:>{col_widths_asc[0]}.1f}",
-            f"{mean_fc:>{col_widths_asc[1]}.2f}",
-            f"{mean_obs:>{col_widths_asc[2]}.2f}",
-            f"{count:>{col_widths_asc[3]}}"
-        ]))
-    with open(asc_outfile, "w", encoding="utf-8") as f:
-        f.write("\n".join(asc_lines))
+# Parameter aus YAML oder Datenstruktur
+obs_classes = obs_ranges_def
+fc_classes = for_ranges_def
 
-from collections import defaultdict
-from scipy.stats import linregress
-import matplotlib.pyplot as plt
-import os
+n_rows = len(obs_classes)
+n_cols = len(fc_classes)
 
+# Ausgabe-Verzeichnis & Datei
+all_city_str = "_".join(re.sub(r'[\\/:"*?<>|\s]+', '_', c) for c in combined_data.keys())
+outdir = os.path.join("distribution_outputs", all_city_str)
+os.makedirs(outdir, exist_ok=True)
+
+users_set = {u for city_data in combined_data.values()
+                 for betdate, data in city_data.items()
+                 for u in data.get('f', {}).keys()}
+user_str = "_".join(re.sub(r'[\\/:"*?<>|\s]+', '_', u) for u in users_set)
+
+outfile_xlsx = os.path.join(outdir, f"distribution_all_{all_city_str}_{user_str}.xlsx")
+
+# Workbook laden oder erstellen
+if os.path.exists(outfile_xlsx):
+    wb = load_workbook(outfile_xlsx)
+else:
+    wb = Workbook()
+    if "Sheet" in wb.sheetnames and wb["Sheet"].max_row == 1:
+        wb.remove(wb["Sheet"])
+
+# Neues Sheet
+sheet_base_name = f"{param}_{all_city_str}"
+sheet_name = sheet_base_name
+counter = 1
+while sheet_name in wb.sheetnames:
+    sheet_name = f"{sheet_base_name}_{counter}"
+    counter += 1
+ws = wb.create_sheet(title=sheet_name)
+
+# Styles
+blue_fill = PatternFill(start_color="ADD8E6", end_color="ADD8E6", fill_type="solid")
+orchid_fill = PatternFill(start_color="DA70D6", end_color="DA70D6", fill_type="solid")
+
+# ------------------- Kopfzeilen ------------------- #
+ws.cell(row=1, column=1, value="Mfc \\ MOb")
+
+# ------------------- Matrix Counts ------------------- #
+matrix_counts = [[counts.get((tuple(obs_classes[i]), tuple(fc_classes[j])), 0)
+                  for j in range(n_cols)] for i in range(n_rows)]
+
+# Matrix in Excel schreiben
+for i in range(n_rows):
+    for j in range(n_cols):
+        cell = ws.cell(row=i+2, column=j+2, value=matrix_counts[i][j])
+        # Optional: Diagonale farbig markieren
+        if i == j:
+            cell.fill = blue_fill
+
+# ------------------- Row- und Col-Summen ------------------- #
+row_sums = [sum(row) for row in matrix_counts]
+col_sums = [sum(matrix_counts[i][j] for i in range(n_rows)) for j in range(n_cols)]
+
+for i, s in enumerate(row_sums):
+    ws.cell(row=i+2, column=n_cols+2, value=s)
+for j, s in enumerate(col_sums):
+    ws.cell(row=n_rows+2, column=j+2, value=s)
+
+ws.cell(row=n_rows+2, column=n_cols+2, value=sum(row_sums)).fill = orchid_fill
+
+from decimal import Decimal
+
+# MFc (pro Observed-Zeile)
+for i in range(n_rows):
+    fc_vals_all = []
+    for j in range(n_cols):
+        pairs = values_by_bin.get((tuple(obs_classes[i]), tuple(fc_classes[j])), [])
+        fc_vals_all.extend([Decimal(str(f)) for o, f in pairs if f is not None])
+
+    if fc_vals_all:
+        fc_mfc = (sum(fc_vals_all) / Decimal(len(fc_vals_all))).quantize(Decimal('0.01'))
+        ws.cell(row=i+2, column=1, value=fc_mfc)
+    else:
+        ws.cell(row=i+2, column=1, value='NIL')
+
+for j in range(n_cols):
+    obs_vals_all = []
+    for i in range(n_rows):
+        pairs = values_by_bin.get((tuple(obs_classes[i]), tuple(fc_classes[j])), [])
+        obs_vals_all.extend([Decimal(str(o)) for o, f in pairs if o is not None])
+
+    if obs_vals_all:
+        mob = (sum(obs_vals_all) / Decimal(len(obs_vals_all))).quantize(Decimal('0.01'))
+        ws.cell(row=1, column=j+2, value=mob)
+    else:
+        ws.cell(row=1, column=j+2, value='NIL')
+# Excel Teil wurde angepasst: Mittelwerte von Obs über die Forklassen und umgekehrt.
+
+# ------------------- Summen-Beschriftungen ------------------- #
+ws.cell(row=n_rows+2, column=1, value="Row_Sum")
+ws.cell(row=1, column=n_cols+2, value="Col_Sum")
+ws.cell(row=n_rows+3, column=1, value="BIAS")
+
+# ------------------- Bias pro Forecast-Spalte ------------------- #
+for j in range(n_cols):
+    if col_sums[j] > 0:
+        bias_sum = Decimal('0')
+        for i in range(n_rows):
+            mfci = ws.cell(row=i+2, column=1).value
+            mobj = ws.cell(row=1, column=j+2).value
+
+            if mfci in (None, 'NIL') or mobj in (None, 'NIL'):
+                continue
+            try:
+                mfci_d = Decimal(str(mfci))
+                mobj_d = Decimal(str(mobj))
+                contrib = (mfci_d - mobj_d) * Decimal(matrix_counts[i][j]) / Decimal(col_sums[j])
+                bias_sum += contrib
+            except (InvalidOperation, TypeError):
+                continue
+        col_bias = bias_sum.quantize(Decimal('0.01'))
+    else:
+        col_bias = 'NIL'
+
+    ws.cell(row=n_rows+3, column=j+2, value=float(col_bias) if col_bias != 'NIL' else 'NIL')
+
+# ------------------- Excel speichern ------------------- #
+wb.save(outfile_xlsx)
+print(f"Excel table saved (sheet updated): {outfile_xlsx}")
+
+
+outdir = os.path.join("distribution_outputs", all_city_str)
+
+# ------------------- ASCII-Datei ----------------------- #
+
+asc_outfile = os.path.join(outdir, f"distribution_{all_city_str}_{param}_{user_str}_{day_name}.asc")
+
+col_widths_asc = [5, 6, 6, 4]
+headers = ["Kl", "MFc", "MOb", "#"]  
+
+asc_lines = [
+    "  ".join(f"{h:>{w}}" for h, w in zip(headers, col_widths_asc)),
+    "  ".join("-"*w for w in col_widths_asc)
+]
+
+    # --- jetzt Schleife über Forecast-Klassen ---
+for j, (fc_lower, fc_upper) in enumerate(fc_classes):
+    fc_vals = []
+    obs_vals = []
+
+        # alle Paare für diese Forecast-Klasse sammeln
+    for i, obs_r in enumerate(obs_classes):
+        pairs = values_by_bin.get((tuple(obs_r), tuple(fc_classes[j])), [])
+        for o, f in pairs:
+            if f is not None:
+                fc_vals.append(Decimal(str(f)))
+            if o is not None:
+                obs_vals.append(Decimal(str(o)))
+
+    # Mittelwerte
+    mean_fc = (sum(fc_vals)/Decimal(len(fc_vals))) if fc_vals else "NIL"
+    mean_obs = (sum(obs_vals)/Decimal(len(obs_vals))) if obs_vals else "NIL"
+
+    # Counts
+    obs_count = len(obs_vals)
+    col_sum   = sum(matrix_counts[i][j] for i in range(n_cols))
+
+    # Formatierung
+    if mean_fc == "NIL":
+        mf_format = f"{mean_fc:>{col_widths_asc[1]}}"
+        mo_format = f"{mean_obs:>{col_widths_asc[2]}}"
+    else:
+        if fc_upper < 1.0:
+            mf_format = f"{float(mean_fc):>{col_widths_asc[1]}.2f}"
+            mo_format = f"{float(mean_obs):>{col_widths_asc[2]}.2f}"
+        else:
+            mf_format = f"{float(mean_fc):>{col_widths_asc[1]}.1f}"
+            mo_format = f"{float(mean_obs):>{col_widths_asc[2]}.1f}"
+
+    asc_lines.append("  ".join([
+        f"{fc_upper:>{col_widths_asc[0]}.1f}",  # Forecast-Klassen-Maxima
+        mf_format,
+        mo_format,
+        f"{col_sum:>{col_widths_asc[3]}}"       
+    ]))
+
+# Der ASCII-Teil wurde gänzlich korrigiert.
+
+
+
+with open(asc_outfile, "w", encoding="utf-8") as f:
+    f.write("\n".join(asc_lines))
+
+print(f"Gesperichert unter: {asc_outfile}")
+
+
+# ------------------- Plots ------------------- #
+# Hier kommen die Plots. Hier habe ich die individuelle Skalierung für jeden Parameter eingefügt unter den vielen if's.
+# Dann habe ich noch den dd12 Plot für jede Stadt als Polarkoordinatenplot hinzugefügt mit verschiedene Farben für die
+# Obse und Forecasts.
+
+plot_outdir = os.path.join(outdir, "plots")
+os.makedirs(plot_outdir, exist_ok=True)
+
+def set_linear_axis(ax, param):
+    Achsen linear setzen und Tick-Schritte definieren
+    ax.set_xscale('linear')
+    ax.set_yscale('linear')
+    
+    if param.lower() == "sd1":
+        ticks = np.arange(0, 61, 10)
+    elif param.lower() == "sd24":
+        ticks = np.arange(0, 101, 20)
+    elif param.lower() == "fx24":
+        ticks = np.arange(5, 26, 5)
+    else:
+        ticks = None
+    
+    if ticks is not None:
+        ax.xaxis.set_major_locator(FixedLocator(ticks))
+        ax.yaxis.set_major_locator(FixedLocator(ticks))
+
+# Scatterplots pro Parameter
 for param in elemente_namen:
     obs_vals, fcast_vals = [], []
-    counts = defaultdict(int)
 
-    # --- Daten sammeln und Binning über Intervalle ---
+    # Daten sammeln: alle Werte nehmen, nicht nur Max
     for city, city_data in combined_data.items():
         for betdate, data in city_data.items():
+            if betdate not in selected_days:
+                continue
             obs_list = data["o"].get(param, [])
             if not obs_list:
                 continue
-            obs_max = max([v for v in obs_list if v is not None])
-            
+            # nur das Maximum pro Beobachtung nehmen
+            obs_max = max(obs_list)# max([v for v in obs_list if v is not None])
             for user, fvals in data["f"].items():
                 fcast_val = fvals.get(param)
                 if fcast_val is None:
                     continue
-
-                # Intervalle über get_interval()
-                obs_idx, _ = get_interval(obs_max, intervals_cfg.get(param, []))
-                f_idx, _ = get_interval(fcast_val, intervals_cfg.get(param, []))
-                if obs_idx is None or f_idx is None:
-                    continue
-
-                obs_range_key = tuple(intervals_cfg[param][obs_idx])
-                f_range_key = tuple(intervals_cfg[param][f_idx])
-
-                counts[(obs_range_key, f_range_key)] += 1
                 obs_vals.append(obs_max)
                 fcast_vals.append(fcast_val)
+
 
     if len(obs_vals) < 2:
         print(f"Not enough data for {param} to plot.")
         continue
 
-    # --- Heatmap-Zuweisung (absolute Häufigkeiten pro Punkt) ---
-    z = []
-    for o, f in zip(obs_vals, fcast_vals):
-        for (obs_bin, f_bin), count in counts.items():
-            if obs_bin[0] <= o <= obs_bin[1] and f_bin[0] <= f <= f_bin[1]:
-                z.append(count)
-                break
+    # Regression
+    slope, intercept, r_value, _, _ = linregress(obs_vals, fcast_vals)
+
+    # Frequenz pro Punkt berechnen (absolute Häufigkeit)
+    counts = Counter(zip(obs_vals, fcast_vals))
+    freqs = np.array([counts[(x, y)] for x, y in zip(obs_vals, fcast_vals)])
+
+    # Scatterplot erstellen
+    fig, ax = plt.subplots(figsize=(12, 8))
+    set_linear_axis(ax, param)
+
+    marker_size = 50  # Punktegröße
+
+    # Achsenlimits bestimmen
+    x_min, x_max = min(obs_vals), max(obs_vals)
+    y_min, y_max = min(fcast_vals), max(fcast_vals)
+
+    vmin = freqs.min()
+    vmax = freqs.max()
+    if vmin == vmax:
+        vmin = 0
+        vmax = freqs[0] + 1
+        
+        #Windrose
+    if param == "dd12":
+        obs_dirs_rad = np.deg2rad(obs_vals)
+        fcast_dirs_rad = np.deg2rad(fcast_vals)
+
+        # Plot
+        fig = plt.figure(figsize=(8, 8))
+        ax = fig.add_subplot(111, polar=True)
+        n_bins = len(intervals_cfg.get(param, []))  # Anzahl Bins wie in YAML
+        ax.hist(obs_dirs_rad, bins=n_bins, range=(0, 2*np.pi),
+                alpha=0.6, color="blue", label="Obs")
+        ax.hist(fcast_dirs_rad, bins=n_bins, range=(0, 2*np.pi),
+                alpha=0.6, color="red", label="Forecast")
+
+        ax.set_theta_zero_location("N")
+        ax.set_theta_direction(-1)
+        plt.legend()
+        plt.title(f"wind direction distribution of {param} in {city}")
+
+        plot_file_png = os.path.join(plot_outdir, f"windrose_{param}_{day_name}_{city}.png")
+        plot_file_svg = os.path.join(plot_outdir, f"windrose_{param}_{day_name}_{city}.svg")
+        plt.savefig(plot_file_png, dpi=300)
+        plt.savefig(plot_file_svg)
+        plt.close(fig)
+        print(f"Windrichtungsplot gespeichert für {param}")
+
+        # hier: continue, damit keine Scatterplots/Heatmaps etc. für dd12 kommen
+        print(f"Die Anzahl der bins ist: {n_bins}")
+        break
+
+
+        
+    else:    # Scatterplot
+        scatter = ax.scatter(obs_vals, fcast_vals, c=freqs, s=marker_size,
+                             cmap='coolwarm', alpha=0.7, vmin=vmin, vmax=vmax, clip_on=False)
+
+        # Frequenz als Text anzeigen
+        for x, y in zip(obs_vals, fcast_vals):
+            freq = counts[(x, y)]
+            ax.text(x, y, f"{freq}", fontsize=9, ha='center', va='center', color='black')
+
+        # Colorbar erstellen
+        cbar = plt.colorbar(scatter, ax=ax)
+        cbar.set_label("Frequency (number of points)")
+        if param.lower() in ["rr1", "rr24"]:
+            ticks = np.arange(vmin, vmax+1, 10)
         else:
-            z.append(0)
+            ticks = np.arange(vmin, vmax+1, 1)
+        cbar.set_ticks(ticks)
+        cbar.set_ticklabels([f"{int(t)}" for t in ticks])
 
-    # --- Regression ---
-    slope, intercept, r_value, p_value, std_err = linregress(obs_vals, fcast_vals)
+        # Achsenlimits & Linien
+        if param.lower() == "sd1":
+            ax.set_xlim(0, 60)
+            ax.set_ylim(0, 60)
+            ax.xaxis.set_major_locator(FixedLocator(np.arange(0, 61, 10)))
+            ax.yaxis.set_major_locator(FixedLocator(np.arange(0, 61, 10)))
+            cb_ticks = np.arange(0, 61, 10)  # Colorbar-Ticks
+        elif param.lower() == "sd24":
+            ax.set_xlim(0, 100)
+            ax.set_ylim(0, 100)
+            ax.xaxis.set_major_locator(FixedLocator(np.arange(0, 101, 20)))
+            ax.yaxis.set_major_locator(FixedLocator(np.arange(0, 101, 20)))
+            cb_ticks = np.arange(0, 101, 20)  # Colorbar-Ticks
+        elif param.lower() == "ff12":
+            ax.set_xlim(0, 15)
+            ax.set_ylim(0, 15)
+            ax.xaxis.set_major_locator(FixedLocator(np.arange(0, 16, 3)))
+            ax.yaxis.set_major_locator(FixedLocator(np.arange(0, 16, 3)))
+        elif param.lower() == "fx24":
+            ax.set_xlim(0, 30)
+            ax.set_ylim(0, 30)
+            ax.xaxis.set_major_locator(FixedLocator(np.arange(0, 31, 5)))
+            ax.yaxis.set_major_locator(FixedLocator(np.arange(0, 31, 5)))
+        elif param.lower() == "tmin":
+            ax.set_xlim(-15, 25)
+            ax.set_ylim(-15, 25)
+            ax.xaxis.set_major_locator(FixedLocator(np.arange(-15, 26, 5)))
+            ax.yaxis.set_major_locator(FixedLocator(np.arange(-15, 26, 5)))
+        elif param.lower() == "tmax":
+            ax.set_xlim(-10, 40)
+            ax.set_ylim(-10, 40)
+            ax.xaxis.set_major_locator(FixedLocator(np.arange(-5, 41, 5)))
+            ax.yaxis.set_major_locator(FixedLocator(np.arange(-5, 41, 5)))
+        elif param.lower() == "td12":
+            ax.set_xlim(-15, 25)
+            ax.set_ylim(-15, 25)
+            ax.xaxis.set_major_locator(FixedLocator(np.arange(-15, 26, 5)))
+            ax.yaxis.set_major_locator(FixedLocator(np.arange(-15, 26, 5)))
+        elif param.lower() == "rr1":
+            ax.set_xscale("symlog", linthresh=0.1)  # linearer Bereich +-0.1
+            ax.set_yscale("symlog", linthresh=0.1)
+            ax.set_xlim(0, 100)
+            ax.set_ylim(0, 100)
 
-    # --- Scatterplot ---
-    fig, ax = plt.subplots(figsize=(16, 10))
-    scatter = ax.scatter(obs_vals, fcast_vals, c=z, s=50, cmap='jet', alpha=0.7)
+            # Major-Ticks: 1, 2, 5, 10, 20
+            ax.xaxis.set_major_locator(LogLocator(base=10.0, subs=(1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0, 8.0, 9.0, 10.0), numticks=10))
+            ax.yaxis.set_major_locator(LogLocator(base=10.0, subs=(1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0, 8.0, 9.0, 10.0), numticks=10))
 
-    min_val = min(min(obs_vals), min(fcast_vals))
-    max_val = max(max(obs_vals), max(fcast_vals))
-    ax.plot([min_val, max_val], [min_val, max_val], 'k--', label="Obs = Forecast")
-    ax.plot([min_val, max_val],
-            [intercept + slope*min_val, intercept + slope*max_val],
-            'r-', label=f"y = {slope:.2f}x + {intercept:.2f}, R²={r_value**2:.2f}")
+        elif param.lower() == "rr24":
+            ax.set_xscale("symlog", linthresh=0.1)
+            ax.set_yscale("symlog", linthresh=0.1)
+            ax.set_xlim(0, 200)
+            ax.set_ylim(0, 200)
 
-    # --- Achsenticks auf Basis der Intervalle ---
-    if param in intervals_cfg:
-        obs_ticks = [interval[1] for interval in intervals_cfg[param]]  # obere Grenze der Obs-Intervalle
-        fcast_ticks = [interval[1] for interval in intervals_cfg[param]]  # obere Grenze der Forecast-Intervalle
-        ax.set_xticks(obs_ticks)
-        ax.set_yticks(fcast_ticks)
-        ax.set_xticklabels([str(interval[1]) for interval in intervals_cfg[param]], rotation=45)
-        ax.set_yticklabels([str(interval[1]) for interval in intervals_cfg[param]])
-        # Für RR1 und RR24 
+            # Major-Ticks: 1, 2, 5, 10, 20, 50, 100
+            ax.xaxis.set_major_locator(LogLocator(base=10.0, subs=(1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0, 8.0, 9.0, 10.0), numticks=10))
+            ax.yaxis.set_major_locator(LogLocator(base=10.0, subs=(1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0, 8.0, 9.0, 10.0), numticks=10))
 
-    # --- Achsenbeschriftung & Titel ---
-    si_element = param_to_si_map.get(param, "")
-    ax.set_xlabel(f"Observation ({param}) [{si_element}]")
-    ax.set_ylabel(f"Forecast ({param}) [{si_element}]")
-    ax.set_title(f"Scatterplot with absolute frequency for cities: {', '.join(city)}")
-    ax.grid(True)
-    ax.legend()
+        # 45° Linie Obs=Forecast
+        xlim = ax.get_xlim()
+        ylim = ax.get_ylim()
+        ax.plot([xlim[0], xlim[1]], [xlim[0], xlim[1]], 'k--', label="Obs = Forecast")
 
-    # --- Colorbar ---
-    cbar = fig.colorbar(scatter, ax=ax, location='right')
-    cbar.set_label('Absolute frequency (counts per bin)')
+        # Regressionslinie
+        y_start = intercept + slope * xlim[0]
+        y_end   = intercept + slope * xlim[1]
+        ax.plot([xlim[0], xlim[1]], [y_start, y_end],
+                'r-', label=f"y = {slope:.2f}x + {intercept:.2f}, R²={r_value**2:.2f}")
 
-    plt.tight_layout()
-    plot_filename = os.path.join(outdir, f"scatter_absfreq_{city}_{param}_{user_str}.png")
-    plt.savefig(plot_filename, dpi=300)
-    plt.close(fig)
-    print(f"Scatterplot saved for {param}: {plot_filename}")
+
+        # Achsenbeschriftung & Titel
+        si_unit = param_to_si_map.get(param, "")
+        ax.set_xlabel(f"Observation ({param}) [{si_unit}]")
+        ax.set_ylabel(f"Forecast ({param}) [{si_unit}]")
+        day_str = day_name if day_name in ["Sat", "Sun"] else "all days"
+        ax.set_title(f"Scatterplot {param} for {day_str} and {', '.join(combined_data.keys())}")
+
+        ax.grid(True)
+        ax.legend()
+
+        # Speichern
+        
+        
+        plot_file_png = os.path.join(plot_outdir, f"scatter_{param}_{city}_{day_name}.png")
+        plot_file_svg = os.path.join(plot_outdir, f"scatter_{param}_{city}_{day_name}.svg")
+        plt.savefig(plot_file_png, dpi=300)
+        plt.savefig(plot_file_svg)
+        plt.show()
+        plt.close(fig)
+
+        print(f"Scatterplot saved for {param}")
+        print("Total points:", len(obs_vals))
+        print("Unique (obs, forecast) pairs:", len(counts))
 
 
 
