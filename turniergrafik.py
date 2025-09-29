@@ -639,6 +639,7 @@ if __name__ == "__main__":
             # Datei einlesen
             npzfile = np.load(FileName, allow_pickle=True)
             missing = 0
+            alternative_name = cfg.teilnehmerumbenennung    #nicht in die Schleife, ergibt einen ERROR!
             
             for Player in cfg.auswertungsteilnehmer:
 
@@ -663,7 +664,7 @@ if __name__ == "__main__":
                         faulty_dates.add(i)
                         # alternativen Namen probieren
                         try: 
-                            alternative_name = cfg.teilnehmerumbenennung[Player]
+                            
                             #print("%s nicht gefunden! Alternativer Name: %s"
                             #      % (Player, alternative_name) )
                             # Punkte des Spielers aus Datei einlesen
@@ -822,82 +823,60 @@ if __name__ == "__main__":
 
 
 # Quotienten berechnen, wenn als Argument angegeben oder in der Konfiguration gesetzt
-if args.quotient or cfg.quotienten_berechnen:
-    # Teilnehmer fuer die Quotientenberechnung
-    if args.quotient:
-        teilnehmer = args.quotient.split(",")
-    else:
-        teilnehmer = cfg.quotienten_teilnehmer
 
-    # Wenn alle Dateien eingelesen werden sollen
+if args.quotient or cfg.quotienten_berechnen:
+    teilnehmer = args.quotient.split(",") if args.quotient else cfg.quotienten_teilnehmer
+
     if cfg.quotienten_alle_dateien:
-        # Alle txt-Dateien mit ({datum})*years.txt einlesen. Mit glob wird jede txt-Datei dieser Form gefunden.
-        glob_str = "*years.txt"
-        files = glob(glob_str)
-    else: 
-        # Nur die Datei des aktuellen Plots einlesen
+        files = glob("*years.txt")
+        file_txt = "diffs_quotients.txt"      # ein gemeinsamer Zieldateiname
+        file_xlsx = "diffs_quotients.xlsx"
+    else:
         filename += "_years.txt"
         if verbose:
             print("Nur die Datei des aktuellen Plots einlesen:", filename)
         files = [filename]
-         
-    # Liste fuer die Ergebnisse initialisieren
+        file_txt = filename.replace("years.txt", "quotients.txt")
+        file_xlsx = filename.replace("years.txt", "quotients.xlsx")
+
     results = []
-    
-    # Iteriere durch alle gefundenen / gewuenschten Dateien
+
     for f in files:
-        # Datei einlesen
         df = pd.read_csv(f, sep=r"\s+", engine="python", index_col=0)
-        # Datum in Spalte umwandeln
-        df = df.T.reset_index().rename(columns={"index":"Datum"})              # Datum soll raus.
-        
-        # Nur die gewünschten MOSe / Teilnehmer
+        df = df.T.reset_index().rename(columns={"index": "Datum"})
         df_sel = df[["Datum"] + teilnehmer].copy()
-        
-        # Berechnung der Summe ueber alle Tage
-        df_sum = df_sel[teilnehmer].sum().to_frame().T       # .T heißt transponieren.
-        # Differenz und Quotient berechnen
+        df_sum = df_sel[teilnehmer].sum().to_frame().T
         df_sum["Diff"] = df_sum[teilnehmer[0]] - df_sum[teilnehmer[1]]
         df_sum["Quot in %"] = df_sum[teilnehmer[0]] / df_sum[teilnehmer[1]] * 100
-        
-        # Zusatzinfon aus Dateinamen extrahieren
-        var_name = os.path.basename(f).split("_")[3]
-        # Trennzeichen an der Position 4 bei den später gespeicherten Dateien
-        city = os.path.basename(f).split("_")[2]
-        # Trennzeichen an der Position 3 bei den später gespeicherten Dateien
-        df_sum["Variable"] = var_name
-        df_sum["Stadt"] = city
-
-        # Spalten neu anordnen: Stadt, Tage, Variable zuerst
-        # Tage aus cfg
+        basename = os.path.basename(f)
+        df_sum["Variable"] = basename.split("_")[3]
+        df_sum["Stadt"] = basename.split("_")[2]
         tage_str = ", ".join(cfg.auswertungstage) if isinstance(cfg.auswertungstage, list) else cfg.auswertungstage
         df_sum["Tage"] = tage_str
-         
-        # Spalten neu anordnen
         cols_order = ["Stadt", "Tage", "Variable"] + teilnehmer + ["Diff", "Quot in %"]
-        # Summen-DataFrame in der gewuenschten Reihenfolge anordnen
         df_sum = df_sum[cols_order]
-        # Ergebnis an die Liste der Ergebnisse anhaengen
         results.append(df_sum)
-        
-    # Alles zusammenfassen
-    df_final = pd.concat(results, ignore_index=True)
-    
-    # Nach der ersten Spalte "Stadt" alphabetisch sortieren
-    df_final = df_final.sort_values(by="Stadt").reset_index(drop=True)
-    
-    # Wenn Dateiformat txt gewünscht, dann Text-Datei speichern
-    if "txt" in cfg.quotienten_dateiformate:
-        # TXT speichern
-        file_txt = f.replace("years.txt", "quotients.txt")
-        df_final.to_csv(file_txt, index=False, sep=" ")
-        if verbose:
-            print("TXT-Datei wurde gespeichert:", file_txt)
 
-    # Wenn Dateiformat xlsx gewünscht, dann Excel-Datei speichern
+    df_final = pd.concat(results, ignore_index=True)
+    df_final = df_final.sort_values(by="Stadt").reset_index(drop=True)
+
+    # TXT speichern und anhängen
+    if "txt" in cfg.quotienten_dateiformate:
+        write_header = not os.path.exists(file_txt)
+        with open(file_txt, "a") as out_f:
+            df_final.to_csv(out_f, index=False, sep=" ", header=write_header)
+        if verbose:
+            print("TXT-Datei wurde gespeichert/angehängt:", file_txt)
+
+    # Excel speichern und anhängen
     if "xlsx" in cfg.quotienten_dateiformate:
-        # Excel speichern
-        file_xlsx = f.replace("years.txt", "quotients.xlsx")
+        if os.path.exists(file_xlsx):
+            existing_df = pd.read_excel(file_xlsx)
+            df_final = pd.concat([existing_df, df_final], ignore_index=True)
         df_final.to_excel(file_xlsx, index=False)
         if verbose:
-            print("XLSX-Datei wurde gespeichert:", file_xlsx)
+            print("XLSX-Datei wurde gespeichert/angehängt:", file_xlsx)
+
+            
+# 5 if's in die Tonne schmeißen büdde!!!!!!!!!!!!!
+# Anfügen ist doch geiler als x mal if!
