@@ -14,6 +14,7 @@ import matplotlib.pyplot as plt
 from scipy.stats import binned_statistic_2d, linregress
 from decimal import Decimal, localcontext, ROUND_HALF_EVEN
 import openpyxl
+from openpyxl import Workbook
 from openpyxl.styles import PatternFill
 import numpy as np
 import matplotlib.pyplot as plt
@@ -424,7 +425,6 @@ plot_outdir = os.path.join(outdir, "plots")
 os.makedirs(plot_outdir, exist_ok=True)
 
 def set_linear_axis(ax, param):
-    Achsen linear setzen und Tick-Schritte definieren
     ax.set_xscale('linear')
     ax.set_yscale('linear')
     
