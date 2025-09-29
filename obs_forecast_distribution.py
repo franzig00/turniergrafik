@@ -23,6 +23,7 @@ from matplotlib.ticker import FixedLocator, LogLocator
 
 
 
+
 db = dbr.db()
 
 # ------------------- YAML laden -------------------#
@@ -290,21 +291,21 @@ for j, s in enumerate(col_sums):
 
 ws.cell(row=n_rows+2, column=n_cols+2, value=sum(row_sums)).fill = orchid_fill
 
-from decimal import Decimal
 
-# MFc (pro Observed-Zeile)
+
+# MFc
 for i in range(n_rows):
-    fc_vals_all = []
-    for j in range(n_cols):
+    fc_vals_all = []    # lege erstmal leere Listen für jede Zeile an
+    for j in range(n_cols): # gehe nun durch jede Spalte (Vorhersageklassen)
         pairs = values_by_bin.get((tuple(obs_classes[i]), tuple(fc_classes[j])), [])
         fc_vals_all.extend([Decimal(str(f)) for o, f in pairs if f is not None])
 
     if fc_vals_all:
-        fc_mfc = (sum(fc_vals_all) / Decimal(len(fc_vals_all))).quantize(Decimal('0.01'))
+        fc_mfc = (sum(fc_vals_all) / Decimal(len(fc_vals_all))).quantize(Decimal('0.01'))   # gewichtetes Mittel
         ws.cell(row=i+2, column=1, value=fc_mfc)
     else:
         ws.cell(row=i+2, column=1, value='NIL')
-
+# MOb
 for j in range(n_cols):
     obs_vals_all = []
     for i in range(n_rows):
@@ -316,7 +317,7 @@ for j in range(n_cols):
         ws.cell(row=1, column=j+2, value=mob)
     else:
         ws.cell(row=1, column=j+2, value='NIL')
-# Excel Teil wurde angepasst: Mittelwerte von Obs über die Forklassen und umgekehrt.
+
 
 # ------------------- Summen-Beschriftungen ------------------- #
 ws.cell(row=n_rows+2, column=1, value="Row_Sum")
