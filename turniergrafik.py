@@ -878,5 +878,4 @@ if args.quotient or cfg.quotienten_berechnen:
             print("XLSX-Datei wurde gespeichert/angehängt:", file_xlsx)
 
             
-# 5 if's in die Tonne schmeißen büdde!!!!!!!!!!!!!
-# Anfügen ist doch geiler als x mal if!
+
