@@ -823,21 +823,18 @@ if __name__ == "__main__":
 
 
 # Quotienten berechnen, wenn als Argument angegeben oder in der Konfiguration gesetzt
-
 if args.quotient or cfg.quotienten_berechnen:
+    # Teilnehmer bestimmen
     teilnehmer = args.quotient.split(",") if args.quotient else cfg.quotienten_teilnehmer
 
+    # Dateien auswählen
     if cfg.quotienten_alle_dateien:
         files = glob("*years.txt")
-        file_txt = "diffs_quotients.txt"      # ein gemeinsamer Zieldateiname
-        file_xlsx = "diffs_quotients.xlsx"
     else:
         filename += "_years.txt"
         if verbose:
             print("Nur die Datei des aktuellen Plots einlesen:", filename)
         files = [filename]
-        file_txt = filename.replace("years.txt", "quotients.txt")
-        file_xlsx = filename.replace("years.txt", "quotients.xlsx")
 
     results = []
 
@@ -848,17 +845,25 @@ if args.quotient or cfg.quotienten_berechnen:
         df_sum = df_sel[teilnehmer].sum().to_frame().T
         df_sum["Diff"] = df_sum[teilnehmer[0]] - df_sum[teilnehmer[1]]
         df_sum["Quot in %"] = df_sum[teilnehmer[0]] / df_sum[teilnehmer[1]] * 100
+
         basename = os.path.basename(f)
         df_sum["Variable"] = basename.split("_")[3]
         df_sum["Stadt"] = basename.split("_")[2]
+
         tage_str = ", ".join(cfg.auswertungstage) if isinstance(cfg.auswertungstage, list) else cfg.auswertungstage
         df_sum["Tage"] = tage_str
+
         cols_order = ["Stadt", "Tage", "Variable"] + teilnehmer + ["Diff", "Quot in %"]
         df_sum = df_sum[cols_order]
         results.append(df_sum)
 
+    # Alle Ergebnisse zusammenführen
     df_final = pd.concat(results, ignore_index=True)
     df_final = df_final.sort_values(by="Stadt").reset_index(drop=True)
+
+    # Konstanten Dateinamen für Ausgabe, ohne Datum
+    file_txt = "diffs_quotients.txt"
+    file_xlsx = "diffs_quotients.xlsx"
 
     # TXT speichern und anhängen
     if "txt" in cfg.quotienten_dateiformate:
@@ -876,6 +881,7 @@ if args.quotient or cfg.quotienten_berechnen:
         df_final.to_excel(file_xlsx, index=False)
         if verbose:
             print("XLSX-Datei wurde gespeichert/angehängt:", file_xlsx)
+
 
             
 
