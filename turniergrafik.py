@@ -1,4 +1,3 @@
-
 ### Bibliotheken
 
 # Zeit/Kalender
@@ -9,9 +8,13 @@ from datetime import timedelta
 from datetime import datetime as dt
 # fuer die Umwandlung von Strings in Datumsobjekte
 from copy import copy
+# um Dateien zu finden
+from glob import glob
 
 # einfachere Berechnungen und Umgang mit Fehlwerten
 import numpy as np
+# fuer die Datenanalysen (Quotienten etc.)
+import pandas as pd
 
 # zur grafischen Darstellung
 import matplotlib
@@ -26,18 +29,15 @@ import os
 # Systemfunktionen
 import sys
 
+# um aus einer Liste bestimmte Indizes auszuwählen
 from operator import itemgetter
 
-# replace ajax_print by db_read
-#import ajax_print
+# eigene Module
 import db_read
 import graphics
 import config_loader as cfg
 
 from global_functions import index_2_year, date_2_index, index_2_date, get_friday_range, stadtname, city_to_id
-import pandas as pd
-import glob
-
 
 #----------------------------------------------------------------------------#
 # Setzen des Startzeitpuntes zur Messung der Laufzeit des Programms
@@ -94,7 +94,6 @@ def short_term_mean(points, dates, mean_weaks, max_nan_ratio, cities=5):
         # "schneidet" immer bestimmt grosse Stuecke heraus
         # (dafuer gedacht immer kleinere Stuecke zu bekommen)
         points_span = points[-i:]
-        #print(points_span)
 
         # gib Nan als Summe aus, wenn ein bestimmter Prozentsatz
         # (cfg.anteil_datenverfuegbarkeit) an NaNs ueberschritten wurde
@@ -103,8 +102,7 @@ def short_term_mean(points, dates, mean_weaks, max_nan_ratio, cities=5):
             # bilde mittelwert (arithmetisch) ohne NaNs
             mean = np.nanmean(points_span)
         # wenn der Prozentsatz an NaNs ueberschritten wurde, gib Nan aus
-        else:
-            mean = np.nan
+        else: mean = np.nan
 
         # von max(dates) ziehen wir (i-1)*7 Tage ab,
         # da in Wochen gezaehlt wurde und Tage gesucht sind
@@ -116,7 +114,6 @@ def short_term_mean(points, dates, mean_weaks, max_nan_ratio, cities=5):
         # des Mittelungszeitraums an die Liste an
         mean_date_list.append((date, mean))
 
-    #print(len(mean_date_list))
     return mean_date_list
 
 
@@ -181,7 +178,6 @@ def long_term_mean(points, dates, mean_time_span, max_nan_ratio, cities=5):
             first_tournament_of_year[year] = min(dates_in_year[year])
             # Letztes Tournier des Jahres finden
             last_tournament_of_year[year] = max(dates_in_year[year])
-
             # Finde den Index des ersten Turniers des Jahres in dates
             idx         = dates.index(first_tournament_of_year[year])
             points_span = points[idx:idx+weeks_in_year[year]+1]
@@ -221,23 +217,25 @@ def long_term_mean(points, dates, mean_time_span, max_nan_ratio, cities=5):
         if max(range(0, anzahl_punkte+1, mean_time_span)) < anzahl_punkte:
             anzahl_punkte += mean_time_span
     
+    mean_time_span_original = copy(mean_time_span)
+
     # geht in Schritten mit der definierten Zeitspannengroesse durch die Tage
-    for i in range(0, anzahl_punkte+1, mean_time_span ):
+    for i in range(0, anzahl_punkte+1, mean_time_span_original):
         
-        # Wenn die Anzahl der Punkte kleiner ist als die
-        # Zeitspanne, die fuer die Mittelung benoetigt wird
-        if i+mean_time_span >= len(points):
+        mean_time_span = copy(mean_time_span_original)
+
+        # Wenn die Anzahl der verbleibenden Punkte kleiner ist als die
+        # Zeitspanne, die für die Mittelung benötigt wird
+        if len(points) - i < mean_time_span:
             # Wenn eine Mindestanzahl an Wochen definiert ist,
             # dann wird diese verwendet, um die Anzahl der Punkte zu
-            # vergleichen, die fuer die Berechnung des Mittelwerts
-            # benoetigt werden.
+            # vergleichen, die für die Berechnung des Mittelwerts
+            # benötigt werden.
             if cfg.mindestanzahl_wochen_definiert:
-                # Wenn i plus die Mindestanzahl an Wochen
-                # kleiner ist als die Anzahl der Punkte, dann
-                # wird mean_time_span auf die Differenz zwischen
-                # der Anzahl der Punkte und i gesetzt, um die
-                # Mittelung auf die verbleibenden Punkte zu beschraenken
-                if i + cfg.mindestanzahl_wochen < len(points):
+                # Wenn noch genug Punkte für die Mindestanzahl an Wochen
+                # vorhanden sind, dann wird die Mittelungszeitspanne
+                # angepasst, damit der Mittelwert berechnet werden kann
+                if len(points) - i >= cfg.mindestanzahl_wochen:
                     mean_time_span = len(points) - i
                 # Sonst wird die Schleife abgebrochen
                 else: break
@@ -247,22 +245,33 @@ def long_term_mean(points, dates, mean_time_span, max_nan_ratio, cities=5):
             else: break
         
         # "schneidet" immer gleich grosse Stuecke heraus
+        # außer am Ende, wo der Rest verworfen wird
+        # (nur falls mindestanzahl_wochen_definiert == True)
         points_span = points[i:i+mean_time_span]
-    
+        
+        if verbose:
+            print("points")
+            print(points)
+            print("points_span")
+            print(points_span)
+
         # gib Nan als Summe aus, wenn ein bestimmter Prozentsatz
         # (cfg.anteil_datenverfuegbarkeit) an NaNs ueberschritten wurde
         if (np.isnan(points_span).sum() / mean_time_span) < max_nan_ratio:
             # bilde mittelwert (arithmetisch) ohne NaNs
             mean = np.nanmean(points_span)
-
         else:
             # wenn der Prozentsatz an NaNs ueberschritten wurde, gib Nan aus
             mean = np.nan
-
-        # Datum fuer Mittelungszeitraum aus Liste ausschneiden
-        end_date = dates[ cities * (ii) * mean_time_span ] + 7
-        #end_date = dates[ ii * (mean_time_span * cities) ]
-        ii += 1
+        
+        # Datum fuer Mittelungszeitraum ermitteln
+        if len(points) - i <= mean_time_span:
+            # Das Enddatum ist das Datum bis zum letzten Mittellungszeitraum
+            # das letzte Datum in der Liste
+            end_date = dates[-1]
+        else:
+            end_date = dates[ ii * mean_time_span * cities ] 
+            ii += 1
         
         # Haenge den Mittelwert und das Datum des letzten Tages
         # des Mittelungszeitraums an die Liste an
@@ -346,7 +355,6 @@ def get_player_mean(pointlist,
         # prufe, ob der Spieler einen Ersatzspieler hat,
         # und wenn ja, dann die Punkteliste des Ersatzspielers verwenden,
         # bis in die letzte Ebene des Dictionaries
-        
         # wenn die Punkteliste None-Werte enthaelt, dann
         # ersetze diese durch die Werte des Ersatzspielers
         if cfg.punkteersetzung_elemente:
@@ -382,16 +390,15 @@ def get_player_mean(pointlist,
     # TODO Wenn immer noch None-Werte in der Punkteliste sind, nehme den
     # den Mittelwert der Punkteliste aller Spieler, die an diesem Tag
     # teilgenommen haben, und ersetze die None-Werte damit
-    
     # wenn die Punkteliste (immer noch) None-Werte enthaelt
     # dann ersetze diese durch Null (0)
     pointlist = [0 if v is None else v for v in pointlist]
     pointlist = np.array(pointlist)
-    #print("None-Werte durch Null ersetzt")
-    #print("Punkteliste:", pointlist)
-
-    #print("Maximale Punkte:", elemente_max_punkte)
-    #print("Punkteliste:", pointlist)
+    if verbose:
+        print("None-Werte durch Null ersetzt")
+        print("Punkteliste:", pointlist)
+        print("Maximale Punkte:", elemente_max_punkte)
+        print("Punkteliste:", pointlist)
     
     n_elements = len(elemente_archiv)
 
@@ -453,12 +460,14 @@ def get_player_mean(pointlist,
         PointsLost = [(elemente_max_punkte[i] - v)
                       for i, v in enumerate(Points)]
 
-
     # Durchschnittlich verlorene Punkte berechnen (ohne NaNs)
-    
-    #print( "MEAN:", np.round( np.nanmean(PointsLost),1 ) )
+    mean_points_lost = np.nanmean(PointsLost)
 
-    return np.nanmean(PointsLost)
+    if verbose:
+        print("Punkte verloren:", PointsLost)
+        print("Mittelwert Punkte verloren:", mean_points_lost)
+
+    return mean_points_lost
 
 
 def find_replacement_players(UserValueLists, Player):
@@ -489,9 +498,15 @@ if __name__ == "__main__":
     ps = ap()
     ps.add_argument("-v", "--verbose", help="increase output verbosity",
                         action="store_true")
+    ps.add_argument("-q", "--quotient", help="calculate quotients etc \
+            (enter 2 players for quotient calculation)")
+    
+    # Argumente fuer die Konfiguration der Auswertungselemente, Staedte,
+    # Tage, Turniere und Teilnehmer hinzufuegen
     options = ("params", "cities", "days", "tournaments", "users")
     for option in options:
         ps.add_argument("-"+option[0], "--"+option, type=str, help="Set "+option)
+    
     args = ps.parse_args()
      
     # Wenn verbose als Argument angegeben wurde, dann setze verbose auf True
@@ -507,7 +522,7 @@ if __name__ == "__main__":
     days   = args.days.split(',') if args.days else None
     tournaments = args.tournaments.split(',') if args.tournaments else None
     users  = args.users.split(',') if args.users else None
-    
+
     # Wenn Start- und Endttermine angegeben wurden, dann konvertiere sie in Tagesindizes
     if tournaments:
         # Beispiel: "02.01.2023,09.01.2025"
@@ -547,7 +562,6 @@ if __name__ == "__main__":
         UserValueLists[p] = []
 
     #TODO Archiv-Ordner checken und erstellen hierher verschieben
-    
     # Datenbankverbindung herstellen
     db = db_read.db()
 
@@ -619,12 +633,11 @@ if __name__ == "__main__":
                 # Erstellen und einlesen
                 #ajax_print.ArchiveParse(city_id, i)
                 db_read.ArchiveParse(db, city_id, i)
-                    #TODO Dateipfad als Eingabe
-                    #TODO Datei hier schreiben
+                #TODO Dateipfad als Eingabe
+                #TODO Datei hier schreiben
 
             # Datei einlesen
             npzfile = np.load(FileName, allow_pickle=True)
-            
             missing = 0
             
             for Player in cfg.auswertungsteilnehmer:
@@ -638,10 +651,8 @@ if __name__ == "__main__":
                 # zu ignorierende Termine abfangen
                 # TODO pruefen
                 if i >= start_date and i not in zu_ignorierende_tage:
-
                     # Try-Except ist performancemaessig besser als eine
                     # Abfrage, ob der Name in der Datei enthalten ist (-> IO)
-
                     # versuche den Spieler fuer den Tag auszulesen
                     try:
                         # Punkte des Spielers aus Datei einlesen
@@ -689,7 +700,6 @@ if __name__ == "__main__":
                         print(f"Fehler beim Einlesen von '{Player}' am Tag {i}: {e}")
                         missing += 1
                         player_point_list = [np.nan] * 24
-                        #sys.exit("%s nicht gefunden - kein Ersatz!" % Player)
                         # add NaN to list
                         UserValueLists[Player].append( np.nan )
                         UserValueLists[Player].append( i-1 )
@@ -744,46 +754,6 @@ if __name__ == "__main__":
                                 UserValueLists[Player].append( np.nan )
                     
                     UserValueLists[Player].append( i-1 )
-                    #FIXME entfernen oder verschieben weiter nach oben
-                    """
-                    players_in_file = npzfile.keys()
-                    name = "" #FIXME ACHTUNG: So darf es keinen Spieler mit
-                              #      leerem Namen geben!
-
-                    if Player in players_in_file:
-                        name = Player
-
-                    # sonst pruefen, ob einer der alternativen Namen des
-                    # Spielers in der Datei auftaucht
-                    elif Player in cfg.teilnehmerumbenennung.keys():
-                        alt_name = cfg.teilnehmerumbenennung[Player] \
-                            .intersection( set(players_in_file) )
-
-                        # wenn einer der alternativen Namen auftaucht
-                        if alt_name != set():
-
-                            # set zu string konvertieren
-                            name = list(alt_name)[0]
-
-                    # versuche den Spieler fuer den Tag auszulesen
-                    try:
-
-                        # Punkte des Spielers aus Datei einlesen
-                        player_point_list = npzfile[name]
-
-                        # Tagesmittel des Spielers an die jeweilige Liste anfuegen
-                        UserValueLists[Player].append(
-                            get_player_mean(player_point_list,
-                                            cfg.auswertungstage,
-                                            cfg.auswertungselemente,
-                                            cfg.elemente_archiv,
-                                            max_points_elements,
-                                            eval_el_indexes) )
-
-                    # der Spieler wurde fuer den Tag nicht gefunden
-                    except KeyError:
-                        UserValueLists[Player].append(np.nan)
-                    """
                 # zu ignorierende Termine abfangen und mit NaN beschreiben
                 else:
                     UserValueLists[Player].append( (np.nan, i-1) )
@@ -792,9 +762,6 @@ if __name__ == "__main__":
                 
                 if i not in missing_list:
                     missing_list.append(i)
-                    #print(city)
-                    #print(i)
-                    #print( index_2_date(i) )
 
     #------------------------------------------------------------------------#
     print ("Benoetigte Laufzeit fuer Einlesen und Tagesmitteln: {0} Sekunden"
@@ -812,26 +779,14 @@ if __name__ == "__main__":
         # Wir schneiden beides nun aus um sie von einander zu trennen.
         userpoints = np.array(UserValueLists[player][::2])
         userdates  = UserValueLists[player][1::2]
-
         # Die Listen bestehen nun aus mehreren Staedten hintereinander
-        # ([BER|VIE|ZUR|IBK|LEI]) und es muss noch ueber die Staedte gemittelt
-        # werden.
- 
-        # die lange Datenliste in eine numpy-'Matrix' konvertieren, die so
+        # ([BER|VIE|ZUR|IBK|LEI]) und es muss ueber die Staedte gemittelt werden.
+        # Die lange Datenliste in eine numpy-'Matrix' konvertieren, die so
         # viele Zeilen hat, wie Staedte verarbeitet wurden und anschließendes
         # mitteln ueber die Spalten (BER[1]+VIE[1]+../Staedteanzahl)
         # [BER|VIE|ZUR|IBK|LEI] -> [[BER],[VIE],[ZUR],[IBK],[LEI]]
-        #print( player )
-        #print( np.round(userpoints,1) )
-        #print( len(userpoints) )
-
-        #print( "MATRIX" )
-        #print( np.round( userpoints.reshape(-1, len(cfg.auswertungsstaedte)), 1) )
-
         userpoints = np.nanmean( \
             userpoints.reshape(-1, len(cfg.auswertungsstaedte)), axis=1)
-
-        #print( np.round(userpoints,1) )
 
         # Langfrist und Kurzfristberechnungen
         cities = len(cfg.auswertungsstaedte)
@@ -845,56 +800,15 @@ if __name__ == "__main__":
                                             cfg.mittelungszeitspannen,
                                             cfg.datenluecken_kurzfrist,
                                             cities)))
-
-        #print( "short term" )
-        #print( short_term_data[0] )
-        # Spielerliste
-        players = [p for p, _ in long_term_data]
-
-        # Funktion, um Tabellen zu drucken
-        #------------------------------------------------------------------------#
-print ("Benoetigte Laufzeit fuer Einlesen und Tagesmitteln: {0} Sekunden"
-       .format(time.time() - startTime))
-#------------------------------------------------------------------------#
-
-# Kurzfrist- und Langfrist-Listen initialisieren
-# Typ: [(string Player, [(datetime Date, float LostPoints)])]
-long_term_data = []
-short_term_data = []
-
-for player in UserValueLists.keys():
-
-    # Die Liste enthält abwechselnd Punktzahl und das zugehoerige Datum.
-    # Wir schneiden beides nun aus um sie von einander zu trennen.
-    userpoints = np.array(UserValueLists[player][::2])
-    userdates  = UserValueLists[player][1::2]
-
-    # Die Listen bestehen nun aus mehreren Staedten hintereinander
-    # ([BER|VIE|ZUR|IBK|LEI]) und es muss noch ueber die Staedte gemittelt
-    # werden.
-    userpoints = np.nanmean( \
-        userpoints.reshape(-1, len(cfg.auswertungsstaedte)), axis=1)
-
-    # Langfrist und Kurzfristberechnungen
-    cities = len(cfg.auswertungsstaedte)
-
-    long_term_data.append((player, long_term_mean(userpoints, userdates,
-                                        cfg.auswertungsmittelungszeitraum,
-                                        cfg.datenluecken_langfrist,
-                                        cities)))
-    
-    short_term_data.append((player, short_term_mean(userpoints, userdates,
-                                        cfg.mittelungszeitspannen,
-                                        cfg.datenluecken_kurzfrist,
-                                        cities)))
     
     #------------------------------------------------------------------------#
     print ("Benoetigte Laufzeit der Rechnungen ohne Grafik: {0} Sekunden"
            .format(time.time() - startTime))
     #------------------------------------------------------------------------#
 
-    # Grafik erstellen
-    graphics.erstelleGrafik(long_term_data, short_term_data, cfg)
+    # Grafik erstellen und Namen der erstellten TXT-Datei zurueckgeben
+    # (wird fuer die Quotientenberechnung benoetigt)
+    filename = graphics.erstelleGrafik(long_term_data, short_term_data, cfg)
 
     #------------------------------------------------------------------------#
     # Ausgabe der Laufzeit des Programms
@@ -902,34 +816,88 @@ for player in UserValueLists.keys():
            .format(time.time() - startTime))
     #------------------------------------------------------------------------#
     
-    #print("Turniere mit fehlenden Spielern")
-    #print( missing_list )
+    if verbose:
+        print("Turniertage mit fehlenden Spielern / Tipps:")
+        print( sorted(faulty_dates) )
 
-    print("Turniertage mit fehlenden Spielern / Tipps:")
-    print( sorted(faulty_dates) )
 
-# Alle txt-Dateien mit 2025-09-24_*years.txt einlesen. Mit glob wird jede txt-Datei dieser Form gefunden.
-    
+# Quotienten berechnen, wenn als Argument angegeben oder in der Konfiguration gesetzt
+if args.quotient or cfg.quotienten_berechnen:
+    # Teilnehmer fuer die Quotientenberechnung
+    if args.quotient:
+        teilnehmer = args.quotient.split(",")
+    else:
+        teilnehmer = cfg.quotienten_teilnehmer
 
-    files = glob.glob("2025-09-24_*years.txt")
+    # Wenn alle Dateien eingelesen werden sollen
+    if cfg.quotienten_alle_dateien:
+        # Alle txt-Dateien mit ({datum})*years.txt einlesen. Mit glob wird jede txt-Datei dieser Form gefunden.
+        glob_str = "*years.txt"
+        files = glob(glob_str)
+    else: 
+        # Nur die Datei des aktuellen Plots einlesen
+        filename += "_years.txt"
+        if verbose:
+            print("Nur die Datei des aktuellen Plots einlesen:", filename)
+        files = [filename]
+         
+    # Liste fuer die Ergebnisse initialisieren
     results = []
+    
+    # Iteriere durch alle gefundenen / gewuenschten Dateien
     for f in files:
-        df = pd.read_csv(f, sep=r"\s+", engine="python", index_col=0).T.reset_index().rename(columns={"index":"Datum"})
-        df_sel = df[["Datum", "MSwr-EZ-MOS", "DWD-EZ-MOS"]].copy()
-        df_sum = df_sel[["MSwr-EZ-MOS", "DWD-EZ-MOS"]].sum().to_frame().T
-        df_sum["Diff"] = df_sum["MSwr-EZ-MOS"] - df_sum["DWD-EZ-MOS"]
-        df_sum["Quo in %"] = df_sum["MSwr-EZ-MOS"] / df_sum["DWD-EZ-MOS"] * 100
+        # Datei einlesen
+        df = pd.read_csv(f, sep=r"\s+", engine="python", index_col=0)
+        # Datum in Spalte umwandeln
+        df = df.T.reset_index().rename(columns={"index":"Datum"})              # Datum soll raus.
+        
+        # Nur die gewünschten MOSe / Teilnehmer
+        df_sel = df[["Datum"] + teilnehmer].copy()
+        
+        # Berechnung der Summe ueber alle Tage
+        df_sum = df_sel[teilnehmer].sum().to_frame().T       # .T heißt transponieren.
+        # Differenz und Quotient berechnen
+        df_sum["Diff"] = df_sum[teilnehmer[0]] - df_sum[teilnehmer[1]]
+        df_sum["Quot in %"] = df_sum[teilnehmer[0]] / df_sum[teilnehmer[1]] * 100
+        
+        # Zusatzinfon aus Dateinamen extrahieren
         var_name = os.path.basename(f).split("_")[3]
+        # Trennzeichen an der Position 4 bei den später gespeicherten Dateien
         city = os.path.basename(f).split("_")[2]
-        df_sum["Variable"], df_sum["Stadt"] = var_name, city
-        df_sum["Tage"] = ", ".join(cfg.auswertungstage) if isinstance(cfg.auswertungstage, list) else cfg.auswertungstage
-        cols_order = ["Stadt", "Tage", "Variable", "MSwr-EZ-MOS", "DWD-EZ-MOS", "Diff", "Quo in %"]
-        results.append(df_sum[cols_order])
-    df_final = pd.concat(results, ignore_index=True).sort_values(by="Stadt").reset_index(drop=True)
-    df_final.to_csv("grafik_werte_neu.txt", index=False, sep=" ")
-    df_final.to_excel("grafik_werte_neu.xlsx", index=False)
-    print("Dateien gespeichert: grafik_werte_neu.txt und grafik_werte_neu.xlsx")
-    print(f"Gesamtlaufzeit: {time.time() - startTime:.2f} Sekunden")
+        # Trennzeichen an der Position 3 bei den später gespeicherten Dateien
+        df_sum["Variable"] = var_name
+        df_sum["Stadt"] = city
 
-# Hier muss man ggf. nachjustieren, wenn einen Tag wählt, da die ganze Tabelle (nicht die Werte), aber die Tage in der Tabelle dann nur auf den Tag oder 
-# die Tage gesetzt wird.
+        # Spalten neu anordnen: Stadt, Tage, Variable zuerst
+        # Tage aus cfg
+        tage_str = ", ".join(cfg.auswertungstage) if isinstance(cfg.auswertungstage, list) else cfg.auswertungstage
+        df_sum["Tage"] = tage_str
+         
+        # Spalten neu anordnen
+        cols_order = ["Stadt", "Tage", "Variable"] + teilnehmer + ["Diff", "Quot in %"]
+        # Summen-DataFrame in der gewuenschten Reihenfolge anordnen
+        df_sum = df_sum[cols_order]
+        # Ergebnis an die Liste der Ergebnisse anhaengen
+        results.append(df_sum)
+        
+    # Alles zusammenfassen
+    df_final = pd.concat(results, ignore_index=True)
+    
+    # Nach der ersten Spalte "Stadt" alphabetisch sortieren
+    df_final = df_final.sort_values(by="Stadt").reset_index(drop=True)
+    
+    # Wenn Dateiformat txt gewünscht, dann Text-Datei speichern
+    if "txt" in cfg.quotienten_dateiformate:
+        # TXT speichern
+        file_txt = f.replace("years.txt", "quotients.txt")
+        df_final.to_csv(file_txt, index=False, sep=" ")
+        if verbose:
+            print("TXT-Datei wurde gespeichert:", file_txt)
+
+    # Wenn Dateiformat xlsx gewünscht, dann Excel-Datei speichern
+    if "xlsx" in cfg.quotienten_dateiformate:
+        # Excel speichern
+        file_xlsx = f.replace("years.txt", "quotients.xlsx")
+        df_final.to_excel(file_xlsx, index=False)
+        if verbose:
+            print("XLSX-Datei wurde gespeichert:", file_xlsx)
