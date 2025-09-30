@@ -345,15 +345,13 @@ ws.cell(row=n_rows+3, column=1, value="BIAS")
 # ------------------- Bias pro Forecast-Spalte ------------------- #
 col_bias_list = [
     (
-        sum(
-            (Decimal(str(ws.cell(row=i+2, column=1).value)) - Decimal(str(ws.cell(row=1, column=j+2).value)))
-            * Decimal(matrix_counts[i][j]) / Decimal(col_sums[j])
-            for i in range(n_rows)
-            if ws.cell(row=i+2, column=1).value not in (None, 'NIL')
-            and ws.cell(row=1, column=j+2).value not in (None, 'NIL')
-            and all(
-                isinstance(v, (int, float, str, Decimal))
-                for v in (ws.cell(row=i+2, column=1).value, ws.cell(row=1, column=j+2).value)
+        (
+            sum(
+                (Decimal(str(ws.cell(row=i+2, column=1).value)) - Decimal(str(ws.cell(row=1, column=j+2).value)))
+                * Decimal(matrix_counts[i][j]) / Decimal(col_sums[j])
+                for i in range(n_rows)
+                if ws.cell(row=i+2, column=1).value not in (None, 'NIL')
+                and ws.cell(row=1, column=j+2).value not in (None, 'NIL')
             )
         ).quantize(Decimal("0.01"))
         if col_sums[j] > 0 else "NIL"
@@ -361,15 +359,12 @@ col_bias_list = [
     for j in range(n_cols)
 ]
 
-# Spalten-Bias-Werte in Excel schreiben
-for j, col_bias in enumerate(col_bias_list):
-    ws.cell(
-        row=n_rows+3,
-        column=j+2,
-        value=float(col_bias) if col_bias != "NIL" else "NIL"
-    )
+# Spalten-Bias-Werte in Excel
+for j, col_bias in enumerate(col_bias_list, start=2):
+    ws.cell(row=n_rows+3, column=j, value=float(col_bias) if col_bias != "NIL" else "NIL")
 
 # ------------------- Gewichteter Gesamt-Bias ------------------- #
+# (über die gesamte Kreuzmatrix, also mit Häufigkeiten gewichtet)
 gesamt_bias_sum, gesamt_anzahl = map(
     sum,
     zip(*(
@@ -384,13 +379,30 @@ gesamt_bias_sum, gesamt_anzahl = map(
     ))
 )
 
-gesamtbias = (gesamt_bias_sum / gesamt_anzahl).quantize(Decimal("0.01")) if gesamt_anzahl > 0 else "NIL"
+gesamtbias_weighted = (
+    (gesamt_bias_sum / gesamt_anzahl).quantize(Decimal("0.01"))
+    if gesamt_anzahl > 0 else "NIL"
+)
 
-# Gesamt-BIAS in Excel schreiben (rechts neben den Spalten-BIAS-Werten)
+# ------------------- Ungewichteter Gesamt-Bias ------------------- #
+valid_col_bias = [b for b in col_bias_list if b != "NIL"]
+gesamtbias_non_weighted = (
+    (sum(valid_col_bias) / len(valid_col_bias)).quantize(Decimal("0.01"))
+    if valid_col_bias else "NIL"
+)
+
+# Excel-Ausgabe
+ws.cell(row=n_rows+3, column=n_cols+2, value=float(gesamtbias_weighted) if gesamtbias_weighted != "NIL" else "NIL")
+ws.cell(row=n_rows+4, column=n_cols+2, value=float(gesamtbias_non_weighted) if gesamtbias_non_weighted != "NIL" else "NIL")
+
+print(f"Gewichteter Gesamt-BIAS: {gesamtbias_weighted}")
+print(f"Ungwichteter Gesamt-BIAS: {gesamtbias_non_weighted}")
+
+# Gesamt-BIAS als gewichtetes Mittel in Excel schreiben (rechts neben den Spalten-BIAS-Werten)
 ws.cell(
     row=n_rows+3,
     column=n_cols+2,
-    value=float(gesamtbias) if gesamtbias != "NIL" else "NIL"
+    value=float(gesamtbias_weighted) if gesamtbias_weighted != "NIL" else "NIL"
 )
 
 # ------------------- Excel speichern ------------------- #
