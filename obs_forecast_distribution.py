@@ -266,7 +266,7 @@ blue_fill = PatternFill(start_color="ADD8E6", end_color="ADD8E6", fill_type="sol
 orchid_fill = PatternFill(start_color="DA70D6", end_color="DA70D6", fill_type="solid")
 
 # ------------------- Kopfzeilen ------------------- #
-ws.cell(row=1, column=1, value="Mfc \\ MOb")
+ws.cell(row=1, column=1, value="Kl")
 
 # ------------------- Matrix Counts ------------------- #
 matrix_counts = [[counts.get((tuple(obs_classes[i]), tuple(fc_classes[j])), 0)
