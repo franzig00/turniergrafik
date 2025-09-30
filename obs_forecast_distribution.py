@@ -20,13 +20,14 @@ import numpy as np
 import matplotlib.pyplot as plt
 from matplotlib.ticker import FixedLocator, LogLocator
 from decimal import Decimal, InvalidOperation
+import time
 
 
 
 
 
 
-
+start = time.time()
 db = dbr.db()
 
 # ------------------- YAML laden -------------------#
@@ -481,23 +482,33 @@ print(f"Gespeichert unter: {asc_outfile}")
 # Dann habe ich noch den dd12 Plot für jede Stadt als Polarkoordinatenplot hinzugefügt mit verschiedene Farben für die
 # Obse und Forecasts.
 
+import os
+import numpy as np
+import matplotlib.pyplot as plt
+from matplotlib.ticker import FixedLocator, LogLocator
+from scipy.stats import linregress
+
 plot_outdir = os.path.join(outdir, "plots")
 os.makedirs(plot_outdir, exist_ok=True)
 
+axis_cfg = {
+    "sd1":   {"lims": (0, 60), "ticks": 10},
+    "sd24":  {"lims": (0, 100), "ticks": 20},
+    "ff12":  {"lims": (0, 15), "ticks": 3},
+    "fx24":  {"lims": (0, 30), "ticks": 5},
+    "tmin":  {"lims": (-15, 25), "ticks": 5},
+    "tmax":  {"lims": (-10, 40), "ticks": 5},
+    "td12":  {"lims": (-15, 25), "ticks": 5},
+}
+
 def set_linear_axis(ax, param):
-    ax.set_xscale('linear')
-    ax.set_yscale('linear')
-    
-    if param.lower() == "sd1":
-        ticks = np.arange(0, 61, 10)
-    elif param.lower() == "sd24":
-        ticks = np.arange(0, 101, 20)
-    elif param.lower() == "fx24":
-        ticks = np.arange(5, 26, 5)
-    else:
-        ticks = None
-    
-    if ticks is not None:
+    ax.set_xscale("linear")
+    ax.set_yscale("linear")
+    cfg = axis_cfg.get(param.lower())
+    if cfg:
+        ticks = np.arange(cfg["lims"][0], cfg["lims"][1]+1, cfg["ticks"])
+        ax.set_xlim(cfg["lims"])
+        ax.set_ylim(cfg["lims"])
         ax.xaxis.set_major_locator(FixedLocator(ticks))
         ax.yaxis.set_major_locator(FixedLocator(ticks))
 
@@ -505,197 +516,94 @@ def set_linear_axis(ax, param):
 for param in elemente_namen:
     obs_vals, fcast_vals = [], []
 
-    # Daten sammeln: alle Werte nehmen, nicht nur Max
-    for city, city_data in combined_data.items():
+    for city_data in combined_data.values():
         for betdate, data in city_data.items():
             if betdate not in selected_days:
                 continue
             obs_list = data["o"].get(param, [])
             if not obs_list:
                 continue
-            # nur das Maximum pro Beobachtung nehmen
-            obs_max = max(obs_list)# max([v for v in obs_list if v is not None])
-            for user, fvals in data["f"].items():
+            obs_max = max(obs_list)
+            for fvals in data["f"].values():
                 fcast_val = fvals.get(param)
-                if fcast_val is None:
-                    continue
-                obs_vals.append(obs_max)
-                fcast_vals.append(fcast_val)
-
+                if fcast_val is not None:
+                    obs_vals.append(obs_max)
+                    fcast_vals.append(fcast_val)
 
     if len(obs_vals) < 2:
         print(f"Not enough data for {param} to plot.")
         continue
 
-    # Regression
+    obs_vals = np.array(obs_vals)
+    fcast_vals = np.array(fcast_vals)
+
     slope, intercept, r_value, _, _ = linregress(obs_vals, fcast_vals)
 
-    # Frequenz pro Punkt berechnen (absolute Häufigkeit)
-    counts = Counter(zip(obs_vals, fcast_vals))
-    freqs = np.array([counts[(x, y)] for x, y in zip(obs_vals, fcast_vals)])
+    # Frequenz pro Punkt (vectorized)
+    pairs = np.column_stack((obs_vals, fcast_vals))
+    uniq_pairs, idx, counts = np.unique(pairs, axis=0, return_inverse=True, return_counts=True)
+    freqs = counts[idx]
 
-    # Scatterplot erstellen
-    fig, ax = plt.subplots(figsize=(12, 8))
-    set_linear_axis(ax, param)
-
-    marker_size = 50  # Punktegröße
-
-    # Achsenlimits bestimmen
-    x_min, x_max = min(obs_vals), max(obs_vals)
-    y_min, y_max = min(fcast_vals), max(fcast_vals)
-
-    vmin = freqs.min()
-    vmax = freqs.max()
-    if vmin == vmax:
-        vmin = 0
-        vmax = freqs[0] + 1
-        
-        #Windrose
-    if param == "dd12":
+    # Windrosen für dd12
+    if param.lower() == "dd12":
         obs_dirs_rad = np.deg2rad(obs_vals)
         fcast_dirs_rad = np.deg2rad(fcast_vals)
 
-        # Plot
         fig = plt.figure(figsize=(8, 8))
         ax = fig.add_subplot(111, polar=True)
-        n_bins = len(intervals_cfg.get(param, []))  # Anzahl Bins wie in YAML
-        ax.hist(obs_dirs_rad, bins=n_bins, range=(0, 2*np.pi),
-                alpha=0.6, color="blue", label="Obs")
-        ax.hist(fcast_dirs_rad, bins=n_bins, range=(0, 2*np.pi),
-                alpha=0.6, color="red", label="Forecast")
+        n_bins = len(intervals_cfg.get(param, []))
+        ax.hist(obs_dirs_rad, bins=n_bins, range=(0, 2*np.pi), alpha=0.6, color="blue", label="Obs")
+        ax.hist(fcast_dirs_rad, bins=n_bins, range=(0, 2*np.pi), alpha=0.6, color="red", label="Forecast")
 
         ax.set_theta_zero_location("N")
         ax.set_theta_direction(-1)
         plt.legend()
-        plt.title(f"wind direction distribution of {param} in {city}")
+        plt.title(f"Wind direction distribution of {param}")
 
-        plot_file_png = os.path.join(plot_outdir, f"windrose_{param}_{day_name}_{city}.png")
-        plot_file_svg = os.path.join(plot_outdir, f"windrose_{param}_{day_name}_{city}.svg")
-        plt.savefig(plot_file_png, dpi=300)
-        plt.savefig(plot_file_svg)
+        for ext in ["png", "svg"]:
+            plt.savefig(os.path.join(plot_outdir, f"windrose_{param}_{day_name}.{ext}"), dpi=300)
         plt.close(fig)
-        print(f"Windrichtungsplot gespeichert für {param}")
-        print(f"Die Anzahl der bins ist: {n_bins}")
+        print(f"Windrosenplot gespeichert für {param}")
         continue
 
+    # Scatterplot
+    fig, ax = plt.subplots(figsize=(12, 8))
+    set_linear_axis(ax, param)
 
-        
-    else:    # Scatterplot
-        scatter = ax.scatter(obs_vals, fcast_vals, c=freqs, s=marker_size,
-                             cmap='coolwarm', alpha=0.7, vmin=vmin, vmax=vmax, clip_on=False)
+    ax.scatter(obs_vals, fcast_vals, c=freqs, s=50, cmap="coolwarm",
+               alpha=0.7, vmin=freqs.min(), vmax=freqs.max(), clip_on=False)
 
-        # Frequenz als Text anzeigen
-        for x, y in zip(obs_vals, fcast_vals):
-            freq = counts[(x, y)]
-            ax.text(x, y, f"{freq}", fontsize=9, ha='center', va='center', color='black')
+    # Colorbar
+    cbar = plt.colorbar(ax.collections[0], ax=ax)
+    cbar.set_label("Frequency (number of points)")
+    cbar.set_ticks(np.arange(freqs.min(), freqs.max()+1, max(1, (freqs.max()-freqs.min())//10)))
 
-        # Colorbar erstellen
-        cbar = plt.colorbar(scatter, ax=ax)
-        cbar.set_label("Frequency (number of points)")
-        if param.lower() in ["rr1", "rr24"]:
-            ticks = np.arange(vmin, vmax+1, 10)
-        else:
-            ticks = np.arange(vmin, vmax+1, 1)
-        cbar.set_ticks(ticks)
-        cbar.set_ticklabels([f"{int(t)}" for t in ticks])
+    # Obs=Forecast Linie
+    lims = ax.get_xlim()
+    ax.plot([lims[0], lims[1]], [lims[0], lims[1]], 'k--', label="Obs = Forecast")
 
-        # Achsenlimits & Linien
-        if param.lower() == "sd1":
-            ax.set_xlim(0, 60)
-            ax.set_ylim(0, 60)
-            ax.xaxis.set_major_locator(FixedLocator(np.arange(0, 61, 10)))
-            ax.yaxis.set_major_locator(FixedLocator(np.arange(0, 61, 10)))
-            cb_ticks = np.arange(0, 61, 10)  # Colorbar-Ticks
-        elif param.lower() == "sd24":
-            ax.set_xlim(0, 100)
-            ax.set_ylim(0, 100)
-            ax.xaxis.set_major_locator(FixedLocator(np.arange(0, 101, 20)))
-            ax.yaxis.set_major_locator(FixedLocator(np.arange(0, 101, 20)))
-            cb_ticks = np.arange(0, 101, 20)  # Colorbar-Ticks
-        elif param.lower() == "ff12":
-            ax.set_xlim(0, 15)
-            ax.set_ylim(0, 15)
-            ax.xaxis.set_major_locator(FixedLocator(np.arange(0, 16, 3)))
-            ax.yaxis.set_major_locator(FixedLocator(np.arange(0, 16, 3)))
-        elif param.lower() == "fx24":
-            ax.set_xlim(0, 30)
-            ax.set_ylim(0, 30)
-            ax.xaxis.set_major_locator(FixedLocator(np.arange(0, 31, 5)))
-            ax.yaxis.set_major_locator(FixedLocator(np.arange(0, 31, 5)))
-        elif param.lower() == "tmin":
-            ax.set_xlim(-15, 25)
-            ax.set_ylim(-15, 25)
-            ax.xaxis.set_major_locator(FixedLocator(np.arange(-15, 26, 5)))
-            ax.yaxis.set_major_locator(FixedLocator(np.arange(-15, 26, 5)))
-        elif param.lower() == "tmax":
-            ax.set_xlim(-10, 40)
-            ax.set_ylim(-10, 40)
-            ax.xaxis.set_major_locator(FixedLocator(np.arange(-5, 41, 5)))
-            ax.yaxis.set_major_locator(FixedLocator(np.arange(-5, 41, 5)))
-        elif param.lower() == "td12":
-            ax.set_xlim(-15, 25)
-            ax.set_ylim(-15, 25)
-            ax.xaxis.set_major_locator(FixedLocator(np.arange(-15, 26, 5)))
-            ax.yaxis.set_major_locator(FixedLocator(np.arange(-15, 26, 5)))
-        elif param.lower() == "rr1":
-            ax.set_xscale("symlog", linthresh=0.1)  # linearer Bereich +-0.1
-            ax.set_yscale("symlog", linthresh=0.1)
-            ax.set_xlim(0, 100)
-            ax.set_ylim(0, 100)
+    # Regressionslinie
+    ax.plot([lims[0], lims[1]], [intercept + slope*lims[0], intercept + slope*lims[1]],
+            'r-', label=rf"y={slope:.2f}x+{intercept:.2f}, $R^2={r_value**2:.2f}$")
 
-            # Major-Ticks: 1, 2, 5, 10, 20
-            ax.xaxis.set_major_locator(LogLocator(base=10.0, subs=(1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0, 8.0, 9.0, 10.0), numticks=10))
-            ax.yaxis.set_major_locator(LogLocator(base=10.0, subs=(1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0, 8.0, 9.0, 10.0), numticks=10))
+    # Labels & Titel
+    si_unit = param_to_si_map.get(param, "")
+    ax.set_xlabel(f"Observation ({param}) [{si_unit}]")
+    ax.set_ylabel(f"Forecast ({param}) [{si_unit}]")
+    day_str = day_name if day_name in ["Sat", "Sun"] else "all days"
+    ax.set_title(f"Scatterplot {param} for {day_str} and {', '.join(combined_data.keys())}")
 
-        elif param.lower() == "rr24":
-            ax.set_xscale("symlog", linthresh=0.1)
-            ax.set_yscale("symlog", linthresh=0.1)
-            ax.set_xlim(0, 200)
-            ax.set_ylim(0, 200)
+    ax.grid(True)
+    ax.legend()
 
-            # Major-Ticks: 1, 2, 5, 10, 20, 50, 100
-            ax.xaxis.set_major_locator(LogLocator(base=10.0, subs=(1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0, 8.0, 9.0, 10.0), numticks=10))
-            ax.yaxis.set_major_locator(LogLocator(base=10.0, subs=(1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0, 8.0, 9.0, 10.0), numticks=10))
+    # Speichern
+    for ext in ["png", "svg"]:
+        plt.savefig(os.path.join(plot_outdir, f"scatter_{param}_{day_name}.{ext}"), dpi=300)
+    plt.close(fig)
+    print(f"Scatterplot gespeichert für {param}, Punkte: {len(obs_vals)}, Unique: {len(uniq_pairs)}")
 
-        # Ursprungsgerrade Obs=Forecast
-        xlim = ax.get_xlim()
-        ylim = ax.get_ylim()
-        ax.plot([xlim[0], xlim[1]], [xlim[0], xlim[1]], 'k--', label="Obs = Forecast")
-
-        # Regressionslinie
-        y_start = intercept + slope * xlim[0]
-        y_end   = intercept + slope * xlim[1]
-        ax.plot([xlim[0], xlim[1]], [y_start, y_end],
-                'r-', label=rf"y = {slope:.2f}x + {intercept:.2f}, $R^2={r_value**2:.2f}$")
-
-
-        # Achsenbeschriftung und Titel
-        si_unit = param_to_si_map.get(param, "")
-        ax.set_xlabel(f"Observation ({param}) [{si_unit}]")
-        ax.set_ylabel(f"Forecast ({param}) [{si_unit}]")
-        day_str = day_name if day_name in ["Sat", "Sun"] else "all days"
-        ax.set_title(f"Scatterplot {param} for {day_str} and {', '.join(combined_data.keys())}")
-
-        ax.grid(True)
-        ax.legend()
-
-        # Speichern
-        
-        
-        plot_file_png = os.path.join(plot_outdir, f"scatter_{param}_{city}_{day_name}.png")
-        plot_file_svg = os.path.join(plot_outdir, f"scatter_{param}_{city}_{day_name}.svg")
-        plt.savefig(plot_file_png, dpi=300)
-        plt.savefig(plot_file_svg)
-        plt.show()
-        plt.close(fig)
-
-        print(f"Scatterplot saved for {param}")
-        print("Total points:", len(obs_vals))
-        print("Unique (obs, forecast) pairs:", len(counts))
-
-
-
-
+end = time.time()
+print(f"Laufzeit: {end-start}")
 
 
 
