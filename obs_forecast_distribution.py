@@ -487,6 +487,9 @@ import numpy as np
 import matplotlib.pyplot as plt
 from matplotlib.ticker import FixedLocator, LogLocator
 from scipy.stats import linregress
+import time
+
+start = time.time()
 
 plot_outdir = os.path.join(outdir, "plots")
 os.makedirs(plot_outdir, exist_ok=True)
@@ -501,16 +504,26 @@ axis_cfg = {
     "td12":  {"lims": (-15, 25), "ticks": 5},
 }
 
-def set_linear_axis(ax, param):
-    ax.set_xscale("linear")
-    ax.set_yscale("linear")
-    cfg = axis_cfg.get(param.lower())
-    if cfg:
-        ticks = np.arange(cfg["lims"][0], cfg["lims"][1]+1, cfg["ticks"])
-        ax.set_xlim(cfg["lims"])
-        ax.set_ylim(cfg["lims"])
-        ax.xaxis.set_major_locator(FixedLocator(ticks))
-        ax.yaxis.set_major_locator(FixedLocator(ticks))
+# Hilfsfunktion: Achsen setzen
+def set_axis(ax, param, obs_vals, fcast_vals):
+    param_lower = param.lower()
+    if param_lower in ["rr1", "rr24"]:  # symlog für Niederschlag
+        ax.set_xscale("symlog", linthresh=0.1)
+        ax.set_yscale("symlog", linthresh=0.1)
+        max_val = max(obs_vals.max(), fcast_vals.max())
+        ax.set_xlim(0, max_val*1.05)
+        ax.set_ylim(0, max_val*1.05)
+    else:  # linear für andere Parameter
+        ax.set_xscale("linear")
+        ax.set_yscale("linear")
+        cfg = axis_cfg.get(param_lower)
+        if cfg:
+            ticks = np.arange(cfg["lims"][0], cfg["lims"][1]+1, cfg["ticks"])
+            ax.set_xlim(cfg["lims"])
+            ax.set_ylim(cfg["lims"])
+            ax.xaxis.set_major_locator(FixedLocator(ticks))
+            ax.yaxis.set_major_locator(FixedLocator(ticks))
+
 
 # Scatterplots pro Parameter
 for param in elemente_namen:
@@ -537,6 +550,7 @@ for param in elemente_namen:
     obs_vals = np.array(obs_vals)
     fcast_vals = np.array(fcast_vals)
 
+    # Regression
     slope, intercept, r_value, _, _ = linregress(obs_vals, fcast_vals)
 
     # Frequenz pro Punkt (vectorized)
@@ -561,20 +575,25 @@ for param in elemente_namen:
         plt.title(f"Wind direction distribution of {param}")
 
         for ext in ["png", "svg"]:
-            plt.savefig(os.path.join(plot_outdir, f"windrose_{param}_{day_name}.{ext}"), dpi=300)
+            plt.savefig(
+                os.path.join(plot_outdir, f"windrose_{param}_{day_name}.{ext}"),
+                dpi=300,
+                bbox_inches='tight',
+                pad_inches=0
+            )
         plt.close(fig)
         print(f"Windrosenplot gespeichert für {param}")
         continue
 
     # Scatterplot
     fig, ax = plt.subplots(figsize=(12, 8))
-    set_linear_axis(ax, param)
+    set_axis(ax, param, obs_vals, fcast_vals)
 
-    ax.scatter(obs_vals, fcast_vals, c=freqs, s=50, cmap="coolwarm",
-               alpha=0.7, vmin=freqs.min(), vmax=freqs.max(), clip_on=False)
+    sc = ax.scatter(obs_vals, fcast_vals, c=freqs, s=50, cmap="coolwarm",
+                    alpha=0.7, vmin=freqs.min(), vmax=freqs.max(), clip_on=False)
 
     # Colorbar
-    cbar = plt.colorbar(ax.collections[0], ax=ax)
+    cbar = plt.colorbar(sc, ax=ax)
     cbar.set_label("Frequency (number of points)")
     cbar.set_ticks(np.arange(freqs.min(), freqs.max()+1, max(1, (freqs.max()-freqs.min())//10)))
 
@@ -596,14 +615,18 @@ for param in elemente_namen:
     ax.grid(True)
     ax.legend()
 
-    # Speichern
+    # Speichern randlos
     for ext in ["png", "svg"]:
-        plt.savefig(os.path.join(plot_outdir, f"scatter_{param}_{day_name}.{ext}"), dpi=300)
+        plt.savefig(
+            os.path.join(plot_outdir, f"scatter_{param}_{day_name}.{ext}"),
+            dpi=300,
+            bbox_inches='tight',
+            pad_inches=0
+        )
     plt.close(fig)
+
     print(f"Scatterplot gespeichert für {param}, Punkte: {len(obs_vals)}, Unique: {len(uniq_pairs)}")
 
-end = time.time()
-print(f"Laufzeit: {end-start}")
 
 
 
