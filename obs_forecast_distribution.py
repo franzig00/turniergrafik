@@ -3,7 +3,7 @@ import polars as pl
 from collections import defaultdict, Counter
 from datetime import date
 from argparse import ArgumentParser as ap
-from global_functions import date_2_index, city_to_id, get_list_of_weekends
+from global_functions import date_2_index, city_to_id, get_list_of_weekends, index_2_date
 import db_read as dbr
 import config_loader as cfg
 import yaml
@@ -12,13 +12,16 @@ import os
 import re
 import matplotlib.pyplot as plt
 from scipy.stats import binned_statistic_2d, linregress
-from decimal import Decimal, localcontext, ROUND_HALF_EVEN
+from decimal import Decimal, localcontext, ROUND_HALF_EVEN, InvalidOperation
 import openpyxl
-from openpyxl import Workbook
+from openpyxl import Workbook, load_workbook
 from openpyxl.styles import PatternFill
 import numpy as np
 import matplotlib.pyplot as plt
 from matplotlib.ticker import FixedLocator, LogLocator
+from decimal import Decimal, InvalidOperation
+
+
 
 
 
@@ -292,31 +295,46 @@ for j, s in enumerate(col_sums):
 ws.cell(row=n_rows+2, column=n_cols+2, value=sum(row_sums)).fill = orchid_fill
 
 
+# ------------------- Berechnung Mittelwerte ------------------- #
 
-# MFc
-for i in range(n_rows):
-    fc_vals_all = []    # lege erstmal leere Listen für jede Zeile an
-    for j in range(n_cols): # gehe nun durch jede Spalte (Vorhersageklassen)
-        pairs = values_by_bin.get((tuple(obs_classes[i]), tuple(fc_classes[j])), [])
-        fc_vals_all.extend([Decimal(str(f)) for o, f in pairs if f is not None])
+# MFc: Mittelwert Vorhersagen (für jede Beobachtungsklasse)
+mfc_list = [
+    (
+        (sum(vals) / Decimal(len(vals))).quantize(Decimal('0.01'))
+        if (vals := [
+            Decimal(str(f))
+            for j in range(n_cols)
+            for o, f in values_by_bin.get((tuple(obs_classes[i]), tuple(fc_classes[j])), [])
+            if f is not None
+        ]) else 'NIL'
+    )
+    for i in range(n_rows)
+]
 
-    if fc_vals_all:
-        fc_mfc = (sum(fc_vals_all) / Decimal(len(fc_vals_all))).quantize(Decimal('0.01'))   # gewichtetes Mittel
-        ws.cell(row=i+2, column=1, value=fc_mfc)
-    else:
-        ws.cell(row=i+2, column=1, value='NIL')
-# MOb
-for j in range(n_cols):
-    obs_vals_all = []
-    for i in range(n_rows):
-        pairs = values_by_bin.get((tuple(obs_classes[i]), tuple(fc_classes[j])), [])
-        obs_vals_all.extend([Decimal(str(o)) for o, f in pairs if o is not None])
+# MOb: Mittelwert Beobachtungen (für jede Vorhersageklasse)
+mob_list = [
+    (
+        (sum(vals) / Decimal(len(vals))).quantize(Decimal('0.01'))
+        if (vals := [
+            Decimal(str(o))
+            for i in range(n_rows)
+            for o, f in values_by_bin.get((tuple(obs_classes[i]), tuple(fc_classes[j])), [])
+            if o is not None
+        ]) else 'NIL'
+    )
+    for j in range(n_cols)
+]
 
-    if obs_vals_all:
-        mob = (sum(obs_vals_all) / Decimal(len(obs_vals_all))).quantize(Decimal('0.01'))
-        ws.cell(row=1, column=j+2, value=mob)
-    else:
-        ws.cell(row=1, column=j+2, value='NIL')
+# ------------------- Ergebnisse in Excel schreiben ------------------- #
+
+# MFc in Spalte 1, ab Zeile 2
+for i, mfc in enumerate(mfc_list, start=2):
+    ws.cell(row=i, column=1, value=mfc)
+
+# MOb in Zeile 1, ab Spalte 2
+for j, mob in enumerate(mob_list, start=2):
+    ws.cell(row=1, column=j, value=mob)
+
 
 
 # ------------------- Summen-Beschriftungen ------------------- #
@@ -325,27 +343,55 @@ ws.cell(row=1, column=n_cols+2, value="Col_Sum")
 ws.cell(row=n_rows+3, column=1, value="BIAS")
 
 # ------------------- Bias pro Forecast-Spalte ------------------- #
-for j in range(n_cols):
-    if col_sums[j] > 0:
-        bias_sum = Decimal('0')
-        for i in range(n_rows):
-            mfci = ws.cell(row=i+2, column=1).value
-            mobj = ws.cell(row=1, column=j+2).value
+col_bias_list = [
+    (
+        sum(
+            (Decimal(str(ws.cell(row=i+2, column=1).value)) - Decimal(str(ws.cell(row=1, column=j+2).value)))
+            * Decimal(matrix_counts[i][j]) / Decimal(col_sums[j])
+            for i in range(n_rows)
+            if ws.cell(row=i+2, column=1).value not in (None, 'NIL')
+            and ws.cell(row=1, column=j+2).value not in (None, 'NIL')
+            and all(
+                isinstance(v, (int, float, str, Decimal))
+                for v in (ws.cell(row=i+2, column=1).value, ws.cell(row=1, column=j+2).value)
+            )
+        ).quantize(Decimal("0.01"))
+        if col_sums[j] > 0 else "NIL"
+    )
+    for j in range(n_cols)
+]
 
-            if mfci in (None, 'NIL') or mobj in (None, 'NIL'):
-                continue
-            try:
-                mfci_d = Decimal(str(mfci))
-                mobj_d = Decimal(str(mobj))
-                contrib = (mfci_d - mobj_d) * Decimal(matrix_counts[i][j]) / Decimal(col_sums[j])
-                bias_sum += contrib
-            except (InvalidOperation, TypeError):
-                continue
-        col_bias = bias_sum.quantize(Decimal('0.01'))
-    else:
-        col_bias = 'NIL'
+# Spalten-Bias-Werte in Excel schreiben
+for j, col_bias in enumerate(col_bias_list):
+    ws.cell(
+        row=n_rows+3,
+        column=j+2,
+        value=float(col_bias) if col_bias != "NIL" else "NIL"
+    )
 
-    ws.cell(row=n_rows+3, column=j+2, value=float(col_bias) if col_bias != 'NIL' else 'NIL')
+# ------------------- Gewichteter Gesamt-Bias ------------------- #
+gesamt_bias_sum, gesamt_anzahl = map(
+    sum,
+    zip(*(
+        (
+            (Decimal(str(ws.cell(row=i+2, column=1).value)) - Decimal(str(ws.cell(row=1, column=j+2).value))) * Decimal(matrix_counts[i][j]),
+            Decimal(matrix_counts[i][j])
+        )
+        for i in range(n_rows)
+        for j in range(n_cols)
+        if ws.cell(row=i+2, column=1).value not in (None, 'NIL')
+        and ws.cell(row=1, column=j+2).value not in (None, 'NIL')
+    ))
+)
+
+gesamtbias = (gesamt_bias_sum / gesamt_anzahl).quantize(Decimal("0.01")) if gesamt_anzahl > 0 else "NIL"
+
+# Gesamt-BIAS in Excel schreiben (rechts neben den Spalten-BIAS-Werten)
+ws.cell(
+    row=n_rows+3,
+    column=n_cols+2,
+    value=float(gesamtbias) if gesamtbias != "NIL" else "NIL"
+)
 
 # ------------------- Excel speichern ------------------- #
 wb.save(outfile_xlsx)
@@ -353,6 +399,7 @@ print(f"Excel table saved (sheet updated): {outfile_xlsx}")
 
 
 outdir = os.path.join("distribution_outputs", all_city_str)
+
 
 # ------------------- ASCII-Datei ----------------------- #
 
@@ -414,7 +461,7 @@ for j, (fc_lower, fc_upper) in enumerate(fc_classes):
 with open(asc_outfile, "w", encoding="utf-8") as f:
     f.write("\n".join(asc_lines))
 
-print(f"Gesperichert unter: {asc_outfile}")
+print(f"Gespeichert unter: {asc_outfile}")
 
 
 # ------------------- Plots ------------------- #
