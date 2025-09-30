@@ -25,7 +25,7 @@ import time
 
 
 
-
+start = time.time()
 
 start = time.time()
 db = dbr.db()
@@ -482,14 +482,8 @@ print(f"Gespeichert unter: {asc_outfile}")
 # Dann habe ich noch den dd12 Plot für jede Stadt als Polarkoordinatenplot hinzugefügt mit verschiedene Farben für die
 # Obse und Forecasts.
 
-import os
-import numpy as np
-import matplotlib.pyplot as plt
-from matplotlib.ticker import FixedLocator, LogLocator
-from scipy.stats import linregress
-import time
 
-start = time.time()
+
 
 plot_outdir = os.path.join(outdir, "plots")
 os.makedirs(plot_outdir, exist_ok=True)
