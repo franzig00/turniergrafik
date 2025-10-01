@@ -6,8 +6,8 @@
 database:
   username: readonly
   password: WPWTr34donly
-  host:     wetterturnier.de
-  database: wpwt
+  host: 127.0.0.1
+  database: wpwt_250924
   port:     3306
 
 # Sektion für Städte-Stammdaten
@@ -102,7 +102,7 @@ teilnehmer:
 # Sektion für die spezifische Auswertung
 auswertung:
   starttermin:                          02.09.2022
-  endtermin:                            22.08.2025
+  endtermin:                            26.09.2025
   auswertungstage:                      [Sa, So]
   auswertungsteilnehmer:                [MSwr-MOS-Mix, MSwr-EZ-MOS, MSwr-GFS-MOS, DWD-MOS-Mix, DWD-EZ-MOS, DWD-ICON-MOS, MOS-Mix]
     #auswertungsteilnehmer:                [DWD-EZ-MOS, MSwr-EZ-MOS]
@@ -113,7 +113,7 @@ auswertung:
     #elemente_multi:                       true
   auswertungsstaedte:                   *alle_staedte
     #auswertungsstaedte:                   [Berlin, Wien, Zürich, Innsbruck, Leipzig]
-  auswertungsmittelungszeitraum:        50
+  auswertungsmittelungszeitraum:        52
   mindestanzahl_wochen_definiert:       true
   mindestanzahl_wochen:                 40
   mindestanzahl_wochen_jahresmittelung: 25
