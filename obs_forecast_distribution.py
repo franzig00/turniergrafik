@@ -12,7 +12,7 @@ import re
 import matplotlib.pyplot as plt
 from matplotlib.ticker import FixedLocator
 from scipy.stats import linregress
-from decimal import Decimal, localcontext, ROUND_HALF_EVEN
+from decimal import Decimal, localcontext, ROUND_HALF_EVEN, InvalidOperation
 from openpyxl import Workbook, load_workbook
 from openpyxl.styles import PatternFill
 import time
@@ -279,15 +279,19 @@ def export_to_excel(combined_data, counts, values_by_bin, elemente_namen, interv
         ws.cell(row=n_rows+3, column=1, value="BIAS")
 
         # ------------------- Bias ------------------- #
+        def safe_decimal(val):
+            try:
+                return Decimal(str(val))
+            except (TypeError, ValueError, InvalidOperation):
+                return None
         col_bias_list = [
             (
                 (
                     sum(
-                        (Decimal(str(ws.cell(row=1, column=j+2).value)) - Decimal(str(ws.cell(row=i+2, column=1).value)))
-                        * Decimal(matrix_counts[i][j]) / Decimal(col_sums[j])
+                        (fc - obs) * Decimal(matrix_counts[i][j]) / Decimal(col_sums[j])
                         for i in range(n_rows)
-                        if ws.cell(row=1, column=i+2).value not in (None, 'NIL')
-                        and ws.cell(row=j+2, column=1).value not in (None, 'NIL')
+                        if (obs := safe_decimal(ws.cell(row=i+2, column=1).value)) is not None
+                        and (fc  := safe_decimal(ws.cell(row=1, column=j+2).value)) is not None
                     )
                 ).quantize(Decimal("0.01"))
                 if col_sums[j] > 0 else "NIL"
@@ -295,8 +299,10 @@ def export_to_excel(combined_data, counts, values_by_bin, elemente_namen, interv
             for j in range(n_cols)
         ]
 
+
         for j, col_bias in enumerate(col_bias_list, start=2):
-            ws.cell(row=n_rows+3, column=j, value=float(col_bias) if col_bias != "NIL" else "NIL")
+            ws.cell(row=n_rows+3, column=j, value=str(col_bias) if col_bias != "NIL" else "NIL")
+
 
         # Gewichteter Gesamt-Bias
         gesamt_bias_sum, gesamt_anzahl = map(
@@ -323,8 +329,9 @@ def export_to_excel(combined_data, counts, values_by_bin, elemente_namen, interv
             if valid_col_bias else "NIL"
         )
 
-        ws.cell(row=n_rows+3, column=n_cols+2, value=float(gesamtbias_weighted) if gesamtbias_weighted != "NIL" else "NIL")
-        ws.cell(row=n_rows+4, column=n_cols+2, value=float(gesamtbias_non_weighted) if gesamtbias_non_weighted != "NIL" else "NIL")
+        ws.cell(row=n_rows+3, column=n_cols+2, value=str(gesamtbias_weighted) if gesamtbias_weighted != "NIL" else "NIL")
+        ws.cell(row=n_rows+4, column=n_cols+2, value=str(gesamtbias_non_weighted) if gesamtbias_non_weighted != "NIL" else "NIL")
+
 
         wb.save(outfile_xlsx)
         print(f"Excel table saved (sheet updated): {outfile_xlsx}")
@@ -352,23 +359,47 @@ def export_to_ascii(combined_data, values_by_bin, elemente_namen, intervals_cfg,
             "  ".join("-"*w for w in col_widths_asc)
         ]
 
+        # Schleife über Forecast-Klassen
         for j, (fc_lower, fc_upper) in enumerate(fc_classes):
             fc_vals = []
             obs_vals = []
+            col_sum = 0
+
+            # Sammeln aller Paare für diese Forecast-Klasse
             for i, obs_r in enumerate(obs_classes):
                 pairs = values_by_bin.get((tuple(obs_r), tuple(fc_classes[j])), [])
+                col_sum += len(pairs)
                 for o, f in pairs:
                     if f is not None:
                         fc_vals.append(Decimal(str(f)))
                     if o is not None:
                         obs_vals.append(Decimal(str(o)))
-            mean_fc = (sum(fc_vals)/Decimal(len(fc_vals))) if fc_vals else "NIL"
-            mean_obs = (sum(obs_vals)/Decimal(len(obs_vals))) if obs_vals else "NIL"
-            asc_lines.append(f"{j:<5}{mean_fc!s:>6}{mean_obs!s:>6}{len(pairs):>4}")
 
-        with open(asc_outfile, 'w', encoding='utf-8') as f:
-            f.write("\n".join(map(str, asc_lines)))
-        print(f"ASCII distribution saved: {asc_outfile}")
+            # Mittelwerte
+            mean_fc = (sum(fc_vals)/Decimal(len(fc_vals))).quantize(Decimal("0.01")) if fc_vals else "NIL"
+            mean_obs = (sum(obs_vals)/Decimal(len(obs_vals))).quantize(Decimal("0.01")) if obs_vals else "NIL"
+
+            # Formatierung
+            if mean_fc == "NIL":
+                mf_format = f"{mean_fc:>{col_widths_asc[1]}}"
+                mo_format = f"{mean_obs:>{col_widths_asc[2]}}"
+            else:
+                mf_format = f"{float(mean_fc):>{col_widths_asc[1]}.2f}"
+                mo_format = f"{float(mean_obs):>{col_widths_asc[2]}.2f}"
+
+            asc_lines.append("  ".join([
+                f"{fc_upper:>{col_widths_asc[0]}.1f}",  # Forecast-Klassen-Maxima
+                mf_format,
+                mo_format,
+                f"{col_sum:>{col_widths_asc[3]}}"
+            ]))
+
+        with open(asc_outfile, "w", encoding="utf-8") as f:
+            f.write("\n".join(asc_lines))
+
+        print(f"Gesperichert unter: {asc_outfile}")
+
+
 
 
 # ------------------- Plots ------------------- #
