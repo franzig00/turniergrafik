@@ -232,41 +232,47 @@ def export_to_excel(combined_data, counts, values_by_bin, elemente_namen, interv
         ws.cell(row=n_rows+2, column=n_cols+2, value=sum(row_sums)).fill = orchid_fill
 
         # ------------------- Mittelwerte ------------------- #
+
         mob_list = [
             (
-                (sum(vals) / Decimal(len(vals))).quantize(Decimal('0.01'))
-                if (vals := [
-                    Decimal(str(o))
-                    for j in range(n_cols)
-                    for o, f in values_by_bin.get((tuple(obs_classes[i]), tuple(fc_classes[j])), [])
-                    if o is not None
-                       and Decimal(str(o)) >= Decimal(obs_classes[i][0])
-                       and Decimal(str(o)) <= Decimal(obs_classes[i][1])
-                ]) else 'NIL'
-            )
+                (sum(Decimal(str(o)) for key, pairs in values_by_bin.items()
+                     if tuple(key[0]) == tuple(obs_classes[i])  # nur Observation-Klasse
+                     for o, f in pairs if o is not None)
+                 /
+                 sum(1 for key, pairs in values_by_bin.items()
+                     if tuple(key[0]) == tuple(obs_classes[i])
+                     for o, f in pairs if o is not None)
+                ).quantize(Decimal('0.01'))
+            ) if any(o is not None for key, pairs in values_by_bin.items()
+                     if tuple(key[0]) == tuple(obs_classes[i])
+                     for o, f in pairs) else 'NIL'
             for i in range(n_rows)
         ]
 
+     
+
         mfc_list = [
             (
-                (sum(vals) / Decimal(len(vals))).quantize(Decimal('0.01'))
-                if (vals := [
-                    Decimal(str(f))
-                    for i in range(n_rows)
-                    for o, f in values_by_bin.get((tuple(obs_classes[i]), tuple(fc_classes[j])), [])
-                    if f is not None
-                       and Decimal(str(f)) >= Decimal(fc_classes[j][0])
-                       and Decimal(str(f)) <= Decimal(fc_classes[j][1])
-                ]) else 'NIL'
-            )
+                (sum(Decimal(str(f)) for key, pairs in values_by_bin.items()
+                     if tuple(key[1]) == tuple(fc_classes[j])  # nur Forecast-Klasse
+                     for o, f in pairs if f is not None)
+                 /
+                 sum(1 for key, pairs in values_by_bin.items()
+                     if tuple(key[1]) == tuple(fc_classes[j])
+                     for o, f in pairs if f is not None)
+                ).quantize(Decimal('0.01'))
+            ) if any(f is not None for key, pairs in values_by_bin.items()
+                     if tuple(key[1]) == tuple(fc_classes[j])
+                     for o, f in pairs) else 'NIL'
             for j in range(n_cols)
         ]
 
+
         # ------------------- Ergebnisse schreiben ------------------- #
         for i, mfc in enumerate(mfc_list, start=2):
-            ws.cell(row=i, column=1, value=mfc)
+            ws.cell(row=1, column=i, value=mfc)
         for j, mob in enumerate(mob_list, start=2):
-            ws.cell(row=1, column=j, value=mob)
+            ws.cell(row=j, column=1, value=mob)
 
         ws.cell(row=n_rows+2, column=1, value="Row_Sum")
         ws.cell(row=1, column=n_cols+2, value="Col_Sum")
@@ -277,11 +283,11 @@ def export_to_excel(combined_data, counts, values_by_bin, elemente_namen, interv
             (
                 (
                     sum(
-                        (Decimal(str(ws.cell(row=i+2, column=1).value)) - Decimal(str(ws.cell(row=1, column=j+2).value)))
+                        (Decimal(str(ws.cell(row=1, column=j+2).value)) - Decimal(str(ws.cell(row=i+2, column=1).value)))
                         * Decimal(matrix_counts[i][j]) / Decimal(col_sums[j])
                         for i in range(n_rows)
-                        if ws.cell(row=i+2, column=1).value not in (None, 'NIL')
-                        and ws.cell(row=1, column=j+2).value not in (None, 'NIL')
+                        if ws.cell(row=1, column=i+2).value not in (None, 'NIL')
+                        and ws.cell(row=j+2, column=1).value not in (None, 'NIL')
                     )
                 ).quantize(Decimal("0.01"))
                 if col_sums[j] > 0 else "NIL"
@@ -297,7 +303,7 @@ def export_to_excel(combined_data, counts, values_by_bin, elemente_namen, interv
             sum,
             zip(*(
                 (
-                    (Decimal(str(ws.cell(row=i+2, column=1).value)) - Decimal(str(ws.cell(row=1, column=j+2).value))) * Decimal(matrix_counts[i][j]),
+                    (Decimal(str(ws.cell(row=1, column=j+2).value)) - Decimal(str(ws.cell(row=i+2, column=1).value))) * Decimal(matrix_counts[i][j]),
                     Decimal(matrix_counts[i][j])
                 )
                 for i in range(n_rows)
