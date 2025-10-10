@@ -128,6 +128,7 @@ def combine_data(obs_data, forecast_data, users, users_dict_swapped, elemente_na
                     )
                 except KeyError:
                     combined_data[city][betdate]['f'][user_login] = {el: None for el in elemente_namen}
+
     return combined_data
 
 # ------------------- Counts & Values by Bin ------------------- #
@@ -232,7 +233,12 @@ def export_to_excel(combined_data, counts, values_by_bin, elemente_namen, interv
         ws.cell(row=n_rows+2, column=n_cols+2, value=sum(row_sums)).fill = orchid_fill
 
         # ------------------- Mittelwerte ------------------- #
-
+        
+        print(sum(1 for key, pairs in values_by_bin.items()
+                     if tuple(key[0]) == tuple(obs_classes[i])
+                     for o, f in pairs if o is not None))
+        
+        
         mob_list = [
             (
                 (sum(Decimal(str(o)) for key, pairs in values_by_bin.items()
@@ -248,6 +254,15 @@ def export_to_excel(combined_data, counts, values_by_bin, elemente_namen, interv
                      for o, f in pairs) else 'NIL'
             for i in range(n_rows)
         ]
+        
+        mob_sum = sum(float(m) for m in mob_list if m != 'NIL')
+        total_sum = sum(col_sums)  # Summe über alle Spalten
+
+        print("Summe mob_list:", mob_sum)
+        print("Gesamtsumme col_sums:", total_sum)
+        print("Differenz:", total_sum - mob_sum)
+
+
 
      
 
@@ -284,6 +299,7 @@ def export_to_excel(combined_data, counts, values_by_bin, elemente_namen, interv
                 return Decimal(str(val))
             except (TypeError, ValueError, InvalidOperation):
                 return None
+        print("Column sums:", col_sums)
         col_bias_list = [
             (
                 (
@@ -291,7 +307,7 @@ def export_to_excel(combined_data, counts, values_by_bin, elemente_namen, interv
                         (fc - obs) * Decimal(matrix_counts[i][j]) / Decimal(col_sums[j])
                         for i in range(n_rows)
                         if (obs := safe_decimal(ws.cell(row=i+2, column=1).value)) is not None
-                        and (fc  := safe_decimal(ws.cell(row=1, column=j+2).value)) is not None
+                        and (fc := safe_decimal(ws.cell(row=1, column=j+2).value)) is not None
                     )
                 ).quantize(Decimal("0.01"))
                 if col_sums[j] > 0 else "NIL"
@@ -331,73 +347,95 @@ def export_to_excel(combined_data, counts, values_by_bin, elemente_namen, interv
 
         ws.cell(row=n_rows+3, column=n_cols+2, value=str(gesamtbias_weighted) if gesamtbias_weighted != "NIL" else "NIL")
         ws.cell(row=n_rows+4, column=n_cols+2, value=str(gesamtbias_non_weighted) if gesamtbias_non_weighted != "NIL" else "NIL")
+        print(mfc_list)
+        print(mob_list)
+        return col_bias_list
 
 
-        wb.save(outfile_xlsx)
-        print(f"Excel table saved (sheet updated): {outfile_xlsx}")
+        #wb.save(outfile_xlsx)
+        #print(f"Excel table saved (sheet updated): {outfile_xlsx}")
+
 
 # ------------------- ASCII Export ------------------- #
-def export_to_ascii(combined_data, values_by_bin, elemente_namen, intervals_cfg, day_name):
+# ------------------- ASCII Export ------------------- #
+def export_to_ascii(combined_data, values_by_bin, elemente_namen, intervals_cfg, day_name, col_bias_list):
+    """
+    Exportiert die Verteilungen als ASCII-Dateien.
+    col_bias_list: Liste der Spalten-Bias-Werte wie in Excel berechnet (MFc - Obs)
+    """
+
+    def safe_mean(values):
+        """Exaktes arithmetisches Mittel mit Decimal, gerundet auf 2 Nachkommastellen."""
+        if not values:
+            return "NIL"
+        total = sum(values, Decimal("0"))
+        n = Decimal(len(values))
+        return (total / n).quantize(Decimal("0.01"), rounding=ROUND_HALF_UP)
+
     for param in elemente_namen:
-        obs_classes = intervals_cfg.get(param, [])
         fc_classes = intervals_cfg.get(param, [])
 
-        all_city_str = "_".join(re.sub(r'[\\/:"*?<>|\s]+', '_', c) for c in combined_data.keys())
+        all_city_str = "_".join(re.sub(r'[\\/:"*?<>|\s]+', '_', c) for c in sorted(combined_data.keys()))
         outdir = os.path.join("distribution_outputs", all_city_str)
         os.makedirs(outdir, exist_ok=True)
-        users_set = {u for city_data in combined_data.values()
-                     for betdate, data in city_data.items()
-                     for u in data.get('f', {}).keys()}
-        user_str = "_".join(re.sub(r'[\\/:"*?<>|\s]+', '_', u) for u in users_set)
-        asc_outfile = os.path.join(outdir, f"distribution_{all_city_str}_{param}_{user_str}_{day_name}.asc")
 
+        users_set = {u for city_data in combined_data.values()
+                     for _, data in city_data.items()
+                     for u in data.get('f', {}).keys()}
+        user_str = "_".join(re.sub(r'[\\/:"*?<>|\s]+', '_', u) for u in sorted(users_set))
+
+        asc_outfile = os.path.join(
+            outdir,
+            f"distribution_{all_city_str}_{param}_{user_str}_{day_name}.asc"
+        )
+
+        # ASCII-Header
         col_widths_asc = [5, 6, 6, 4]
         headers = ["Kl", "MFc", "MOb", "#"]
-
         asc_lines = [
             "  ".join(f"{h:>{w}}" for h, w in zip(headers, col_widths_asc)),
-            "  ".join("-"*w for w in col_widths_asc)
+            "  ".join("-" * w for w in col_widths_asc)
         ]
 
-        # Schleife über Forecast-Klassen
+        # ------------------- Berechnung pro FC-Klasse ------------------- #
         for j, (fc_lower, fc_upper) in enumerate(fc_classes):
-            fc_vals = []
-            obs_vals = []
-            col_sum = 0
+            fc_vals_total = []
+            n_total = 0
 
-            # Sammeln aller Paare für diese Forecast-Klasse
-            for i, obs_r in enumerate(obs_classes):
-                pairs = values_by_bin.get((tuple(obs_r), tuple(fc_classes[j])), [])
-                col_sum += len(pairs)
-                for o, f in pairs:
-                    if f is not None:
-                        fc_vals.append(Decimal(str(f)))
-                    if o is not None:
-                        obs_vals.append(Decimal(str(o)))
+            for key, pairs in values_by_bin.items():
+                if key[1] == (fc_lower, fc_upper):
+                    for o, f in pairs:
+                        if f is not None:
+                            fc_vals_total.append(Decimal(str(f)))
+                            n_total += 1
 
-            # Mittelwerte
-            mean_fc = (sum(fc_vals)/Decimal(len(fc_vals))).quantize(Decimal("0.01")) if fc_vals else "NIL"
-            mean_obs = (sum(obs_vals)/Decimal(len(obs_vals))).quantize(Decimal("0.01")) if obs_vals else "NIL"
+            mean_fc = safe_mean(fc_vals_total)
+
+            # Bias aus Excel-Spalte übernehmen
+            bias = col_bias_list[j] if j < len(col_bias_list) else Decimal("0.0")
+            mean_obs = mean_fc - bias if mean_fc != "NIL" and bias != "NIL" else "NIL"
 
             # Formatierung
-            if mean_fc == "NIL":
-                mf_format = f"{mean_fc:>{col_widths_asc[1]}}"
-                mo_format = f"{mean_obs:>{col_widths_asc[2]}}"
-            else:
-                mf_format = f"{float(mean_fc):>{col_widths_asc[1]}.2f}"
-                mo_format = f"{float(mean_obs):>{col_widths_asc[2]}.2f}"
+            kl_str = f"{Decimal(str(fc_upper)).quantize(Decimal('0.1')):>{col_widths_asc[0]}}"
+            mf_str = f"{mean_fc:>{col_widths_asc[1]}.2f}" if mean_fc != "NIL" else f"{mean_fc:>{col_widths_asc[1]}}"
+            mo_str = f"{mean_obs:>{col_widths_asc[2]}.2f}" if mean_obs != "NIL" else f"{mean_obs:>{col_widths_asc[2]}}"
+            n_str = f"{n_total:>{col_widths_asc[3]}}"
 
-            asc_lines.append("  ".join([
-                f"{fc_upper:>{col_widths_asc[0]}.1f}",  # Forecast-Klassen-Maxima
-                mf_format,
-                mo_format,
-                f"{col_sum:>{col_widths_asc[3]}}"
-            ]))
+            asc_lines.append("  ".join([kl_str, mf_str, mo_str, n_str]))
 
+        # ------------------- Datei schreiben ------------------- #
         with open(asc_outfile, "w", encoding="utf-8") as f:
-            f.write("\n".join(asc_lines))
+            f.write("\n".join(asc_lines) + "\n")
+        return col_bias_list
 
-        print(f"Gesperichert unter: {asc_outfile}")
+
+        print(f"ASCII file saved: {asc_outfile}")
+
+
+
+
+
+
 
 
 
@@ -551,6 +589,29 @@ def plot_parameter_scatter(combined_data, param, selected_days, day_name, plot_o
         )
     plt.close(fig)
     print(f"Scatterplot gespeichert für {param}, Punkte: {len(obs_vals)}, Unique: {len(uniq_pairs)}")
+    
+def get_values_per_day(combined_data, elemente_namen):
+    """
+    Gibt die einzelnen Obs- und Forecastwerte für jeden Tag zurück.
+    Struktur: {param: {day: {'obs': [...], 'forecast': {user: [...]}}}}
+    """
+    result = {param: {} for param in elemente_namen}
+
+    for param in elemente_namen:
+        for city, city_data in combined_data.items():
+            for betdate, data in city_data.items():
+                day_dict = result[param].setdefault(betdate, {'obs': [], 'forecast': defaultdict(list)})
+                # Beobachtungen
+                obs_vals = data['o'].get(param, [])
+                day_dict['obs'].extend([v for v in obs_vals if v is not None])
+                # Forecasts pro Nutzer
+                for user, fvals in data['f'].items():
+                    fcast_val = fvals.get(param)
+                    if fcast_val is not None:
+                        day_dict['forecast'][user].append(fcast_val)
+
+    return result
+
 
 # ------------------- Main-Funktion ------------------- #
 def main():
@@ -602,7 +663,19 @@ def main():
 
     # --- Export ---
     export_to_excel(combined_data, counts, values_by_bin, elemente_namen, intervals_cfg)
-    export_to_ascii(combined_data, values_by_bin, elemente_namen, intervals_cfg, day_name="AllDays")
+    col_bias_list = export_to_excel(combined_data, counts, values_by_bin, elemente_namen, intervals_cfg)
+
+
+    export_to_ascii(
+    combined_data,
+    values_by_bin,
+    elemente_namen,
+    intervals_cfg,
+    day_name="Sun",
+    col_bias_list=col_bias_list
+    )
+
+
 
     # --- Plots ---
     for param in elemente_namen:
@@ -610,7 +683,7 @@ def main():
             combined_data,
             param,
             selected_days,
-            day_name="AllDays",
+            day_name="Sun",
             plot_outdir=plot_outdir,
             param_to_si_map=si_unit
         )
