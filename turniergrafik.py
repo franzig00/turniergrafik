@@ -852,10 +852,19 @@ if __name__ == "__main__":
 # Quotienten berechnen, wenn als Argument angegeben oder in der Konfiguration gesetzt
 
 
+from decimal import Decimal, getcontext
+import yaml
+import numpy as np
+import pandas as pd
+import os
+from glob import glob
+from datetime import datetime
+
 getcontext().prec = 50  # hohe Präzision
 
 CFG_FILE = "cfg.yml"
 DATE_FMT = "%d.%m.%Y"
+VERBOSE = True  # verbose-Ausgaben an/aus
 
 # ---------------------------------------------------------
 # YAML-Loader, der unbekannte Python/NumPy-Tags ignoriert
@@ -919,7 +928,8 @@ def _set_auto_auswertung(cfg, woche_arg=None):
 
         ausw["starttermin"] = start.strftime(DATE_FMT)
         ausw["endtermin"] = ende.strftime(DATE_FMT)
-        print(f"Automatisch gesetzt: starttermin = {ausw['starttermin']}, endtermin = {ausw['endtermin']}")
+        if VERBOSE:
+            print(f"Automatisch gesetzt: starttermin = {ausw['starttermin']}, endtermin = {ausw['endtermin']}")
 
         if woche_arg is not None:
             n = int(woche_arg)
@@ -927,8 +937,9 @@ def _set_auto_auswertung(cfg, woche_arg=None):
             n = len(ausw.get("mittelungszeitspannen", [])) or 6
 
         ausw["mittelungszeitspannen"] = list(range(n, 0, -1))
-        print(f"Auswertungsmittelungszeitraum = {n} Wochen")
-        print(f"Mittelungszeitspannen = {ausw['mittelungszeitspannen']}")
+        if VERBOSE:
+            print(f"Auswertungsmittelungszeitraum = {n} Wochen")
+            print(f"Mittelungszeitspannen = {ausw['mittelungszeitspannen']}")
 
         cfg["auswertung"] = ausw
         return cfg
@@ -938,27 +949,11 @@ def _set_auto_auswertung(cfg, woche_arg=None):
         return cfg
 
 # ---------------------------------------------------------
-# Argumente
-# ---------------------------------------------------------
-#parser = argparse.ArgumentParser(description="Turniergrafik Konfiguration")
-#parser.add_argument("-v", "--verbose", action="store_true", help="Erhöhte Ausgabedetails")
-#parser.add_argument("-p", "--params", type=str, help="Parameter, z.B. Sd1")
-#parser.add_argument("-c", "--cities", type=str, help="Städte, z.B. BER")
-#parser.add_argument("-d", "--days", type=str, help="Tage, z.B. Sa,So")
-#parser.add_argument("-t", "--tournaments", type=str, help="Start- und Endtermine, z.B. 02.09.2022,10.10.2025")
-#parser.add_argument("-u", "--user", type=str, help="Teilnehmer, z.B. MSwr-EZ-MOS,DWD-EZ-MOS")
-#parser.add_argument("-a", "--auswertungsmittelungszeitraum", type=int, help="Auswertungsmittelungszeitraum pro Jahr")
-#parser.add_argument("-m", "--mindestanzahl", type=int, help="Mindestanzahl der Wochen pro Jahr")
-#parser.add_argument("-w", "--wochen", type=int, help="Auswertungsmittelungszeitraum in Wochen")
-#parser.add_argument("-q", "--quotient", type=str, help="Teilnehmer für Quotientenberechnung, z.B. MSwr-EZ-MOS,DWD-EZ-MOS")
-#args = parser.parse_args()
-
-# ---------------------------------------------------------
-# Hauptteil
+# YAML laden und auto-setzen
 # ---------------------------------------------------------
 try:
     cfg = _load_yaml_data()
-    cfg = _set_auto_auswertung(cfg, woche_arg=args.wochen)
+    cfg = _set_auto_auswertung(cfg)
 
     # Globale Variablen aus YAML erstellen
     for section_name, section_content in cfg.items():
@@ -974,7 +969,7 @@ try:
 
     _save_yaml_data(cfg)
 
-    if args.verbose:
+    if VERBOSE:
         print("Konfiguration erfolgreich geladen und gespeichert.")
 
 except Exception as e:
@@ -982,123 +977,122 @@ except Exception as e:
     exit()
 
 # ---------------------------------------------------------
-# Quotientenberechnung nur wenn -q gesetzt oder cfg aktiviert
+# QUOTIENTENBERECHNUNG
 # ---------------------------------------------------------
-# globale results-Liste einmal am Anfang definieren
-if "results" not in globals():
-    results = []
+teilnehmer = cfg.get('quotienten_teilnehmer', [])
+tage_kurz = cfg.get('auswertungstage', ['Sa','So'])
 
-# Quotientenberechnung aufrufen
-if args.quotient or cfg.get("quotienten_berechnen", False):
-    # Teilnehmer bestimmen
-    teilnehmer = args.quotient.split(",") if args.quotient else cfg.get("quotienten_teilnehmer", [])
-    if len(teilnehmer) != 2:
-        raise ValueError("Für die Quotientenberechnung müssen genau zwei Teilnehmer angegeben werden!")
+# ---------------------------------------------------------
+# Quotienten berechnen, wenn als Argument oder in YAML aktiviert
+# ---------------------------------------------------------
+# Zugriff auf den Auswertungsbereich im verschachtelten Dictionary
+auswertung_cfg = cfg.get("auswertung", {})
 
-    # Dateien bestimmen
-    if cfg.get("quotienten_alle_dateien", False):
-        files = glob("*years.txt")
+if args.quotient or auswertung_cfg.get("quotienten_berechnen", False):
+    # Teilnehmer für die Quotientenberechnung
+    if args.quotient:
+        teilnehmer = args.quotient.split(",")
+    else:
+        teilnehmer = auswertung_cfg.get("quotienten_teilnehmer", [])
+
+    # Wenn alle Dateien eingelesen werden sollen
+    if auswertung_cfg.get("quotienten_alle_dateien", False):
+        glob_str = "*years.txt"
+        files = glob(glob_str)
     else:
         filename += "_years.txt"
-        if args.verbose:
+        if verbose:
             print("Nur die Datei des aktuellen Plots einlesen:", filename)
         files = [filename]
 
-    # Tagesauswahl bestimmen
-    tage_kurz = [tag.strip() for tag in args.days.split(",")] if hasattr(args, "days") and args.days else cfg.get("auswertungstage", [])
+    if verbose:
+        print("Gefundene Dateien:", files)
+        print("Teilnehmer:", teilnehmer)
 
+    # Liste für die Ergebnisse initialisieren
+    results = []
+
+    # Iteriere durch alle gefundenen / gewünschten Dateien
     for f in files:
-        if args.verbose:
+        if verbose:
             print("Datei wird eingelesen:", f)
+        # Datei einlesen
         df = pd.read_csv(f, sep=r"\s+", engine="python", index_col=0)
         df = df.T.reset_index().rename(columns={"index": "Datum"})
 
+        if verbose:
+            print("Spalten in der Datei:", df.columns.tolist())
+
+        # Nur die gewünschten Teilnehmer auswählen
         try:
             df_sel = df[["Datum"] + teilnehmer].copy()
         except KeyError as e:
-            if args.verbose:
+            if verbose:
                 print(f"Fehler beim Auswählen der Teilnehmer: {e}")
                 print("Teilnehmer:", teilnehmer)
                 print("Vorhandene Spalten:", df.columns.tolist())
             continue
 
-        # Decimal für hohe Präzision
-        for t in teilnehmer:
-            df_sel[t] = df_sel[t].apply(lambda x: Decimal(str(x)))
+        # Berechnung der Summe über alle Tage
+        df_sum = df_sel[teilnehmer].sum().to_frame().T
+        # Differenz und Quotient berechnen
+        df_sum["Diff"] = df_sum[teilnehmer[0]] - df_sum[teilnehmer[1]]
+        df_sum["Quot in %"] = df_sum[teilnehmer[0]] / df_sum[teilnehmer[1]] * 100
 
-        # Berechnung der Summen, Differenz und Quotienten
-        if len(tage_kurz) > 1:
-            quot_list, diff_list = [], []
-            for tag in tage_kurz:
-                df_tag = df_sel[df_sel["Datum"].str.contains(tag)]
-                if df_tag.empty:
-                    if args.verbose:
-                        print(f"Keine Daten für Tag {tag} in Datei {f}")
-                    continue
-                val0 = sum(df_tag[teilnehmer[0]])
-                val1 = sum(df_tag[teilnehmer[1]])
-                diff_list.append(val0 - val1)
-                quot_list.append((val0 / val1) * Decimal("100") if val1 != 0 else Decimal("NaN"))
+        # Zusatzinfo aus Dateinamen extrahieren
+        basename_split = os.path.basename(f).split("_")
+        var_name = basename_split[3] if len(basename_split) > 3 else "Unknown"
+        city = basename_split[2] if len(basename_split) > 2 else "Unknown"
+        df_sum["Variable"] = var_name
+        df_sum["Stadt"] = city
 
-            diff = sum(diff_list) / Decimal(len(diff_list)) if diff_list else Decimal("NaN")
-            quot = sum(quot_list) / Decimal(len(quot_list)) if quot_list else Decimal("NaN")
-            sum_per_player = {t: sum(df_sel[t]) for t in teilnehmer}
-        else:
-            sum_per_player = {t: sum(df_sel[t]) for t in teilnehmer}
-            diff = sum_per_player[teilnehmer[0]] - sum_per_player[teilnehmer[1]]
-            quot = (sum_per_player[teilnehmer[0]] / sum_per_player[teilnehmer[1]] * Decimal("100")
-                    if sum_per_player[teilnehmer[1]] != 0 else Decimal("NaN"))
-
-        # Ergebnis-DataFrame
-        df_sum = pd.DataFrame([{
-            teilnehmer[0]: sum_per_player[teilnehmer[0]],
-            teilnehmer[1]: sum_per_player[teilnehmer[1]],
-            "Diff": diff,
-            "Quot in %": quot
-        }])
-
-        # Zusatzinfos aus Dateinamen
-        basename = os.path.basename(f).split("_")
-        df_sum["Variable"] = basename[3] if len(basename) > 3 else ""
-        df_sum["Stadt"] = basename[2] if len(basename) > 2 else ""
-
-        # Tage als String
-        df_sum["Tage"] = ", ".join(tage_kurz) if isinstance(tage_kurz, list) else str(tage_kurz)
+        # Tage aus cfg
+        auswertungstage = auswertung_cfg.get("auswertungstage", [])
+        tage_str = ", ".join(auswertungstage) if isinstance(auswertungstage, list) else str(auswertungstage)
+        df_sum["Tage"] = tage_str
 
         # Spalten neu anordnen
         cols_order = ["Stadt", "Tage", "Variable"] + teilnehmer + ["Diff", "Quot in %"]
         df_sum = df_sum[cols_order]
 
-        # **Hier wird df_sum jedes Mal angehängt, ohne dass vorherige Ergebnisse verloren gehen**
         results.append(df_sum)
 
-# Am Ende: Alle Ergebnisse zusammenführen und speichern
-if results:
-    df_final = pd.concat(results, ignore_index=True).sort_values(by="Stadt").reset_index(drop=True)
+    # Alles zusammenfassen
+    if results:
+        df_final = pd.concat(results, ignore_index=True)
+        df_final = df_final.sort_values(by="Stadt").reset_index(drop=True)
 
-    # TXT speichern: Anhängen, falls Datei existiert
-    if "txt" in cfg.get("auswertung", {}).get("quotienten_dateiformate", []):
-        file_txt = "diffs_quotients.txt"
-        df_final.to_csv(file_txt, index=False, sep=" ", mode='a', header=not os.path.exists(file_txt))
-        if args.verbose:
-            print("TXT-Datei wurde aktualisiert (angehängt):", file_txt)
+        # Dateiformate aus verschachteltem Dictionary
+        dateiformate = auswertung_cfg.get("quotienten_dateiformate", [])
 
-    # XLSX speichern: Anhängen, falls Datei existiert
-    if "xlsx" in cfg.get("auswertung", {}).get("quotienten_dateiformate", []):
-        try:
-            import openpyxl
-            file_xlsx = "diffs_quotients.xlsx"
-            if os.path.exists(file_xlsx):
-                # existierende Datei laden, neue Ergebnisse anhängen
-                df_existing = pd.read_excel(file_xlsx)
-                df_combined = pd.concat([df_existing, df_final], ignore_index=True)
-                df_combined.to_excel(file_xlsx, index=False)
-            else:
-                df_final.to_excel(file_xlsx, index=False)
-            if args.verbose:
-                print("XLSX-Datei wurde aktualisiert (angehängt):", file_xlsx)
-        except ImportError:
-            print("openpyxl nicht installiert – XLSX-Datei konnte nicht gespeichert werden!")
+        # TXT speichern
+        if "txt" in dateiformate:
+            file_txt = "quotients.txt"
+            df_final.to_csv(file_txt, index=False, sep=" ")
+            if verbose:
+                print("TXT-Datei wurde gespeichert:", file_txt)
+
+        # Excel speichern
+        if "xlsx" in dateiformate:
+            file_xlsx = "quotients.xlsx"
+            df_final.to_excel(file_xlsx, index=False)
+            if verbose:
+                print("XLSX-Datei wurde gespeichert:", file_xlsx)
+    else:
+        if verbose:
+            print("Keine gültigen Dateien/Teilnehmer zum Verarbeiten gefunden.")
+
+
+
+
+
+
+
+
+
+
+
+
 
 
 
