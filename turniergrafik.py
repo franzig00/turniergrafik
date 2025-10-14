@@ -512,7 +512,7 @@ if __name__ == "__main__":
     ps.add_argument("-t", "--tournaments", type=str, help="Start- und Endtermine, z.B. 02.09.2022,10.10.2025")
     ps.add_argument("-u", "--users", type=str, help="Teilnehmer, z.B. MSwr-EZ-MOS,DWD-EZ-MOS")
     ps.add_argument("-l", "--longterm", type=int, help="Auswertungsmittelungszeitraum pro Jahr")
-    ps.add_argument("-le", "--lowerequal", type=int, help="Mindestanzahl der Wochen pro Jahr")
+    ps.add_argument("-ge", "--greaterequal", type=int, help="Mindestanzahl der Wochen pro Jahr")
     ps.add_argument("-w", "--wochen", type=int, help="Auswertungsmittelungszeitraum in Wochen")     # interessant für die rechte Grafik
     ps.add_argument("-q", "--quotient", type=str, help="Teilnehmer für Quotientenberechnung, z.B. MSwr-EZ-MOS,DWD-EZ-MOS")  # ohne q keine Quotient und keine Tabelle
 
@@ -848,17 +848,6 @@ if __name__ == "__main__":
         print( sorted(faulty_dates) )
 
 
-# Quotienten berechnen, wenn als Argument angegeben oder in der Konfiguration gesetzt
-# Quotienten berechnen, wenn als Argument angegeben oder in der Konfiguration gesetzt
-
-
-from decimal import Decimal, getcontext
-import yaml
-import numpy as np
-import pandas as pd
-import os
-from glob import glob
-from datetime import datetime
 
 getcontext().prec = 50  # hohe Präzision
 
@@ -1001,7 +990,7 @@ def linke_seite(filename):
         else:
             teilnehmer = cfg["auswertung"].get("quotienten_teilnehmer", [])
 
-        # Wenn alle Dateien eingelesen werden sollen
+        # Dateien einlesen
         if cfg["auswertung"].get("quotienten_alle_dateien", False):
             glob_str = "*years.txt"
             files = glob(glob_str)
@@ -1016,7 +1005,6 @@ def linke_seite(filename):
         for f in files:
             if verbose:
                 print("Datei wird eingelesen:", f)
-
             if not os.path.exists(f):
                 if verbose:
                     print(f"Datei {f} nicht gefunden – übersprungen.")
@@ -1036,14 +1024,20 @@ def linke_seite(filename):
                     print(f"Fehler beim Auswählen der Teilnehmer: {e}")
                 continue
 
+            # --- Einzelwerte vor Summierung ausgeben ---
+            print(f"\nEinzelwerte für Datei {f}:")
+            print(df_sel)
+
+            # Summen, Differenz, Quotient
             df_sum = df_sel[teilnehmer].sum().to_frame().T
+            df_sum = df_sum.round(2)
             df_sum["Diff"] = df_sum[teilnehmer[0]] - df_sum[teilnehmer[1]]
-            df_sum["Quot in %"] = df_sum[teilnehmer[0]] / df_sum[teilnehmer[1]] * 100
+            df_sum["Diff"] = df_sum["Diff"].round(2)
+            df_sum["Quot in %"] = (df_sum[teilnehmer[0]] / df_sum[teilnehmer[1]] * 100).round(2)
 
             parts = os.path.basename(f).split("_")
             city = parts[2] if len(parts) > 2 else "Unbekannt"
             var_name = parts[3] if len(parts) > 3 else "Unbekannt"
-
             df_sum["Variable"] = var_name
             df_sum["Stadt"] = city
 
@@ -1052,8 +1046,8 @@ def linke_seite(filename):
             else:
                 tage_cfg = cfg["auswertung"].get("auswertungstage", [])
                 tage_final = ", ".join(t.strip() for t in tage_cfg) if isinstance(tage_cfg, list) else str(tage_cfg).strip()
-
             df_sum["Tage"] = tage_final
+
             cols_order = ["Stadt", "Tage", "Variable"] + teilnehmer + ["Diff", "Quot in %"]
             df_sum = df_sum[cols_order]
             results.append(df_sum)
@@ -1077,8 +1071,6 @@ def linke_seite(filename):
                 print(f"XLSX-Datei wurde ergänzt: {output_file}")
             return combined_df
 
-print(f"Die linke Seite hat die Tabelle {linke_seite(filename)}")
-
 def rechte_seite(filename):
     if args.quotient or cfg["auswertung"].get("quotienten_berechnen", False):
         # Teilnehmer für die Quotientenberechnung
@@ -1087,7 +1079,7 @@ def rechte_seite(filename):
         else:
             teilnehmer = cfg["auswertung"].get("quotienten_teilnehmer", [])
 
-        # Wenn alle Dateien eingelesen werden sollen
+        # Dateien einlesen
         if cfg["auswertung"].get("quotienten_alle_dateien", False):
             glob_str = "*weeks.txt"
             files = glob(glob_str)
@@ -1102,7 +1094,6 @@ def rechte_seite(filename):
         for f in files:
             if verbose:
                 print("Datei wird eingelesen:", f)
-
             if not os.path.exists(f):
                 if verbose:
                     print(f"Datei {f} nicht gefunden – übersprungen.")
@@ -1122,14 +1113,18 @@ def rechte_seite(filename):
                     print(f"Fehler beim Auswählen der Teilnehmer: {e}")
                 continue
 
+            # --- Einzelwerte vor Summierung ausgeben ---
+            print(f"\nEinzelwerte für Datei {f}:")
+            print(df_sel)
+
+            # Summen, Differenz, Quotient
             df_sum = df_sel[teilnehmer].sum().to_frame().T
-            df_sum["Diff"] = df_sum[teilnehmer[0]] - df_sum[teilnehmer[1]]
-            df_sum["Quot in %"] = df_sum[teilnehmer[0]] / df_sum[teilnehmer[1]] * 100
+            df_sum["Diff"] = (df_sum[teilnehmer[0]] - df_sum[teilnehmer[1]]).round(1)
+            df_sum["Quot in %"] = (df_sum[teilnehmer[0]] / df_sum[teilnehmer[1]] * 100).round(1)
 
             parts = os.path.basename(f).split("_")
             city = parts[2] if len(parts) > 2 else "Unbekannt"
             var_name = parts[3] if len(parts) > 3 else "Unbekannt"
-
             df_sum["Variable"] = var_name
             df_sum["Stadt"] = city
 
@@ -1138,8 +1133,8 @@ def rechte_seite(filename):
             else:
                 tage_cfg = cfg["auswertung"].get("auswertungstage", [])
                 tage_final = ", ".join(t.strip() for t in tage_cfg) if isinstance(tage_cfg, list) else str(tage_cfg).strip()
-
             df_sum["Tage"] = tage_final
+
             cols_order = ["Stadt", "Tage", "Variable"] + teilnehmer + ["Diff", "Quot in %"]
             df_sum = df_sum[cols_order]
             results.append(df_sum)
@@ -1162,6 +1157,7 @@ def rechte_seite(filename):
             if verbose:
                 print(f"XLSX-Datei wurde ergänzt: {output_file}")
             return combined_df
+
 
 print(f"Die rechte Seite hat die Tabelle {rechte_seite(filename)}")
 
