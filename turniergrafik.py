@@ -976,111 +976,200 @@ except Exception as e:
     print(f"KRITISCHER FEHLER: Die Konfiguration konnte nicht geladen werden. Details: {e}")
     exit()
 
-# ---------------------------------------------------------
-# QUOTIENTENBERECHNUNG
-# ---------------------------------------------------------
-teilnehmer = cfg.get('quotienten_teilnehmer', [])
-tage_kurz = cfg.get('auswertungstage', ['Sa','So'])
+# ==============================================================
+# Terminal-Eingabe für Tage
+# ==============================================================
 
-# ---------------------------------------------------------
-# Quotienten berechnen, wenn als Argument oder in YAML aktiviert
-# ---------------------------------------------------------
-# Zugriff auf den Auswertungsbereich im verschachtelten Dictionary
-auswertung_cfg = cfg.get("auswertung", {})
+if not args.days:
+    print("\nBitte die Auswertungstage angeben (z. B. 'Sa', 'So' oder 'Sa,So'):")
+    tage_input = input("Tage: ").strip()
+    if tage_input == "":
+        print("→ Keine Eingabe erkannt, Standard: 'Sa,So'")
+        tage_input = "Sa,So"
+    days = tage_input.split(',')
+else:
+    days = args.days.split(',')
 
-if args.quotient or auswertung_cfg.get("quotienten_berechnen", False):
-    # Teilnehmer für die Quotientenberechnung
-    if args.quotient:
-        teilnehmer = args.quotient.split(",")
-    else:
-        teilnehmer = auswertung_cfg.get("quotienten_teilnehmer", [])
+tage_str_input = ",".join(days)
 
-    # Wenn alle Dateien eingelesen werden sollen
-    if auswertung_cfg.get("quotienten_alle_dateien", False):
-        glob_str = "*years.txt"
-        files = glob(glob_str)
-    else:
-        filename += "_years.txt"
-        if verbose:
-            print("Nur die Datei des aktuellen Plots einlesen:", filename)
-        files = [filename]
 
-    if verbose:
-        print("Gefundene Dateien:", files)
-        print("Teilnehmer:", teilnehmer)
+def linke_seite(filename):
+    if args.quotient or cfg["auswertung"].get("quotienten_berechnen", False):
+        # Teilnehmer für die Quotientenberechnung
+        if args.quotient:
+            teilnehmer = args.quotient.split(",")
+        else:
+            teilnehmer = cfg["auswertung"].get("quotienten_teilnehmer", [])
 
-    # Liste für die Ergebnisse initialisieren
-    results = []
-
-    # Iteriere durch alle gefundenen / gewünschten Dateien
-    for f in files:
-        if verbose:
-            print("Datei wird eingelesen:", f)
-        # Datei einlesen
-        df = pd.read_csv(f, sep=r"\s+", engine="python", index_col=0)
-        df = df.T.reset_index().rename(columns={"index": "Datum"})
-
-        if verbose:
-            print("Spalten in der Datei:", df.columns.tolist())
-
-        # Nur die gewünschten Teilnehmer auswählen
-        try:
-            df_sel = df[["Datum"] + teilnehmer].copy()
-        except KeyError as e:
+        # Wenn alle Dateien eingelesen werden sollen
+        if cfg["auswertung"].get("quotienten_alle_dateien", False):
+            glob_str = "*years.txt"
+            files = glob(glob_str)
+        else:
+            filename_full = filename + "_years.txt"
             if verbose:
-                print(f"Fehler beim Auswählen der Teilnehmer: {e}")
-                print("Teilnehmer:", teilnehmer)
-                print("Vorhandene Spalten:", df.columns.tolist())
-            continue
+                print("Nur die Datei des aktuellen Plots einlesen:", filename_full)
+            files = [filename_full]
 
-        # Berechnung der Summe über alle Tage
-        df_sum = df_sel[teilnehmer].sum().to_frame().T
-        # Differenz und Quotient berechnen
-        df_sum["Diff"] = df_sum[teilnehmer[0]] - df_sum[teilnehmer[1]]
-        df_sum["Quot in %"] = df_sum[teilnehmer[0]] / df_sum[teilnehmer[1]] * 100
+        results = []
 
-        # Zusatzinfo aus Dateinamen extrahieren
-        basename_split = os.path.basename(f).split("_")
-        var_name = basename_split[3] if len(basename_split) > 3 else "Unknown"
-        city = basename_split[2] if len(basename_split) > 2 else "Unknown"
-        df_sum["Variable"] = var_name
-        df_sum["Stadt"] = city
-
-        # Tage aus cfg
-        auswertungstage = auswertung_cfg.get("auswertungstage", [])
-        tage_str = ", ".join(auswertungstage) if isinstance(auswertungstage, list) else str(auswertungstage)
-        df_sum["Tage"] = tage_str
-
-        # Spalten neu anordnen
-        cols_order = ["Stadt", "Tage", "Variable"] + teilnehmer + ["Diff", "Quot in %"]
-        df_sum = df_sum[cols_order]
-
-        results.append(df_sum)
-
-    # Alles zusammenfassen
-    if results:
-        df_final = pd.concat(results, ignore_index=True)
-        df_final = df_final.sort_values(by="Stadt").reset_index(drop=True)
-
-        # Dateiformate aus verschachteltem Dictionary
-        dateiformate = auswertung_cfg.get("quotienten_dateiformate", [])
-
-        # TXT speichern
-        if "txt" in dateiformate:
-            file_txt = "quotients.txt"
-            df_final.to_csv(file_txt, index=False, sep=" ")
+        for f in files:
             if verbose:
-                print("TXT-Datei wurde gespeichert:", file_txt)
+                print("Datei wird eingelesen:", f)
 
-        # Excel speichern
-        if "xlsx" in dateiformate:
-            file_xlsx = "quotients.xlsx"
-            df_final.to_excel(file_xlsx, index=False)
+            if not os.path.exists(f):
+                if verbose:
+                    print(f"Datei {f} nicht gefunden – übersprungen.")
+                continue
+
+            df = pd.read_csv(f, sep=r"\s+", engine="python", index_col=0)
+            if df.empty:
+                if verbose:
+                    print(f"Keine Daten in {f} – übersprungen.")
+                continue
+
+            df = df.T.reset_index().rename(columns={"index": "Datum"})
+            try:
+                df_sel = df[["Datum"] + teilnehmer].copy()
+            except KeyError as e:
+                if verbose:
+                    print(f"Fehler beim Auswählen der Teilnehmer: {e}")
+                continue
+
+            df_sum = df_sel[teilnehmer].sum().to_frame().T
+            df_sum["Diff"] = df_sum[teilnehmer[0]] - df_sum[teilnehmer[1]]
+            df_sum["Quot in %"] = df_sum[teilnehmer[0]] / df_sum[teilnehmer[1]] * 100
+
+            parts = os.path.basename(f).split("_")
+            city = parts[2] if len(parts) > 2 else "Unbekannt"
+            var_name = parts[3] if len(parts) > 3 else "Unbekannt"
+
+            df_sum["Variable"] = var_name
+            df_sum["Stadt"] = city
+
+            if getattr(args, "days", None):
+                tage_final = args.days.strip()
+            else:
+                tage_cfg = cfg["auswertung"].get("auswertungstage", [])
+                tage_final = ", ".join(t.strip() for t in tage_cfg) if isinstance(tage_cfg, list) else str(tage_cfg).strip()
+
+            df_sum["Tage"] = tage_final
+            cols_order = ["Stadt", "Tage", "Variable"] + teilnehmer + ["Diff", "Quot in %"]
+            df_sum = df_sum[cols_order]
+            results.append(df_sum)
+
+        if not results:
+            print("Keine gültigen Dateien oder Teilnehmer zum Verarbeiten gefunden.")
+            return None
+
+        df_final = pd.concat(results, ignore_index=True).sort_values(by="Stadt").reset_index(drop=True)
+
+        # XLSX-Anhängen
+        if "xlsx" in cfg["auswertung"].get("quotienten_dateiformate", []):
+            output_file = "quotients_links.xlsx"
+            if os.path.exists(output_file):
+                existing_df = pd.read_excel(output_file)
+                combined_df = pd.concat([existing_df, df_final], ignore_index=True)
+            else:
+                combined_df = df_final
+            combined_df.to_excel(output_file, index=False, sheet_name="Quotients")
             if verbose:
-                print("XLSX-Datei wurde gespeichert:", file_xlsx)
-    else:
-        if verbose:
-            print("Keine gültigen Dateien/Teilnehmer zum Verarbeiten gefunden.")
+                print(f"XLSX-Datei wurde ergänzt: {output_file}")
+            return combined_df
+
+print(f"Die linke Seite hat die Tabelle {linke_seite(filename)}")
+
+def rechte_seite(filename):
+    if args.quotient or cfg["auswertung"].get("quotienten_berechnen", False):
+        # Teilnehmer für die Quotientenberechnung
+        if args.quotient:
+            teilnehmer = args.quotient.split(",")
+        else:
+            teilnehmer = cfg["auswertung"].get("quotienten_teilnehmer", [])
+
+        # Wenn alle Dateien eingelesen werden sollen
+        if cfg["auswertung"].get("quotienten_alle_dateien", False):
+            glob_str = "*weeks.txt"
+            files = glob(glob_str)
+        else:
+            filename_full = filename + "_weeks.txt"
+            if verbose:
+                print("Nur die Datei des aktuellen Plots einlesen:", filename_full)
+            files = [filename_full]
+
+        results = []
+
+        for f in files:
+            if verbose:
+                print("Datei wird eingelesen:", f)
+
+            if not os.path.exists(f):
+                if verbose:
+                    print(f"Datei {f} nicht gefunden – übersprungen.")
+                continue
+
+            df = pd.read_csv(f, sep=r"\s+", engine="python", index_col=0)
+            if df.empty:
+                if verbose:
+                    print(f"Keine Daten in {f} – übersprungen.")
+                continue
+
+            df = df.T.reset_index().rename(columns={"index": "Datum"})
+            try:
+                df_sel = df[["Datum"] + teilnehmer].copy()
+            except KeyError as e:
+                if verbose:
+                    print(f"Fehler beim Auswählen der Teilnehmer: {e}")
+                continue
+
+            df_sum = df_sel[teilnehmer].sum().to_frame().T
+            df_sum["Diff"] = df_sum[teilnehmer[0]] - df_sum[teilnehmer[1]]
+            df_sum["Quot in %"] = df_sum[teilnehmer[0]] / df_sum[teilnehmer[1]] * 100
+
+            parts = os.path.basename(f).split("_")
+            city = parts[2] if len(parts) > 2 else "Unbekannt"
+            var_name = parts[3] if len(parts) > 3 else "Unbekannt"
+
+            df_sum["Variable"] = var_name
+            df_sum["Stadt"] = city
+
+            if getattr(args, "days", None):
+                tage_final = args.days.strip()
+            else:
+                tage_cfg = cfg["auswertung"].get("auswertungstage", [])
+                tage_final = ", ".join(t.strip() for t in tage_cfg) if isinstance(tage_cfg, list) else str(tage_cfg).strip()
+
+            df_sum["Tage"] = tage_final
+            cols_order = ["Stadt", "Tage", "Variable"] + teilnehmer + ["Diff", "Quot in %"]
+            df_sum = df_sum[cols_order]
+            results.append(df_sum)
+
+        if not results:
+            print("Keine gültigen Dateien oder Teilnehmer zum Verarbeiten gefunden.")
+            return None
+
+        df_final = pd.concat(results, ignore_index=True).sort_values(by="Stadt").reset_index(drop=True)
+
+        # XLSX-Anhängen
+        if "xlsx" in cfg["auswertung"].get("quotienten_dateiformate", []):
+            output_file = "quotients_rechts.xlsx"
+            if os.path.exists(output_file):
+                existing_df = pd.read_excel(output_file)
+                combined_df = pd.concat([existing_df, df_final], ignore_index=True)
+            else:
+                combined_df = df_final
+            combined_df.to_excel(output_file, index=False, sheet_name="Quotients")
+            if verbose:
+                print(f"XLSX-Datei wurde ergänzt: {output_file}")
+            return combined_df
+
+print(f"Die rechte Seite hat die Tabelle {rechte_seite(filename)}")
+
+
+
+
+
+
 
 
 
