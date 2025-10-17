@@ -846,16 +846,17 @@ if __name__ == "__main__":
 
 
 
+
 import os
 from glob import glob
 import pandas as pd
 from decimal import Decimal, getcontext, ROUND_HALF_UP, InvalidOperation
 
 verbose = True
-output_file = "quotients_combined_lang.xlsx"
-daily_output_file = "quotients_daily_lang.xlsx"
+output_file = "quotients_combined_kurz.xlsx"
+daily_output_file = "quotients_daily_kurz.xlsx"
 
-getcontext().prec = 8  # etwas höher, um Rundungsfehler zu vermeiden
+getcontext().prec = 10  # hohe Präzision
 
 if args.quotient or cfg.quotienten_berechnen:
     teilnehmer = args.quotient.split(",") if args.quotient else cfg.quotienten_teilnehmer
@@ -886,22 +887,26 @@ if args.quotient or cfg.quotienten_berechnen:
         except KeyError as e:
             if verbose:
                 print(f"Fehler beim Auswählen der Teilnehmer: {e}")
+                print("Teilnehmer:", teilnehmer)
                 print("Vorhandene Spalten:", df.columns.tolist())
             continue
 
-        # Differenz
-        df_sel["Diff"] = df_sel[teilnehmer[0]] - df_sel[teilnehmer[1]]
+        # Differenz berechnen
+        df_sel["Diff"] = [
+            (Decimal(str(a)) - Decimal(str(b))).quantize(Decimal("0.001"), rounding=ROUND_HALF_UP)
+            for a, b in zip(df_sel[teilnehmer[0]], df_sel[teilnehmer[1]])
+        ]
 
-        # Tagesquotienten mit Decimal
+        # Tagesquotienten berechnen (Decimal, NaN möglich)
         quot_list = []
         for z, n in zip(df_sel[teilnehmer[0]], df_sel[teilnehmer[1]]):
             try:
                 dec_z = Decimal(str(z))
                 dec_n = Decimal(str(n))
                 if dec_n == 0 and dec_z == 0:
-                    quot = Decimal("1")
-                elif dec_n == 0 and dec_z != 0:
-                    quot = Decimal("NaN")
+                    quot = Decimal("1.0000")  # neutraler Quotient
+                elif dec_n == 0:
+                    quot = Decimal("NaN")     # undefiniert
                 else:
                     quot = (dec_z / dec_n).quantize(Decimal("0.0001"), rounding=ROUND_HALF_UP)
             except (InvalidOperation, ValueError):
@@ -909,37 +914,51 @@ if args.quotient or cfg.quotienten_berechnen:
             quot_list.append(quot)
         df_sel["Quot in %"] = quot_list
 
-        # Zusatzinfos
+        # Metadaten extrahieren
         base = os.path.basename(f)
         var_name = base.split("_")[3] if len(base.split("_")) > 3 else "unknown_var"
         city = base.split("_")[2] if len(base.split("_")) > 2 else "unknown_city"
-        tage_str = ", ".join(cfg.auswertungstage) if isinstance(cfg.auswertungstage, list) else cfg.auswertungstage
 
         df_sel["Variable"] = var_name
         df_sel["Stadt"] = city
-        df_sel["Tage"] = tage_str
+        df_sel["Tage"] = ", ".join(cfg.auswertungstage) if isinstance(cfg.auswertungstage, list) else cfg.auswertungstage
 
+        # Tageswerte als Strings
+        for col in teilnehmer + ["Diff", "Quot in %"]:
+            df_sel[col] = df_sel[col].apply(lambda x: str(x))
         daily_results.append(df_sel[["Stadt", "Tage", "Variable", "Datum"] + teilnehmer + ["Diff", "Quot in %"]])
 
-        # Gesamtsummen mit Decimal
-        sum_spieler_1 = Decimal(str(df_sel[teilnehmer[0]].sum()))
-        sum_spieler_2 = Decimal(str(df_sel[teilnehmer[1]].sum()))
-        sum_diff = Decimal(str(df_sel["Diff"].sum()))
+        # Summen berechnen, NaN ignorieren
+        # Summen berechnen, NaN ignorieren
+        sum_spieler = {
+            teilnehmer[0]: sum(Decimal(str(v)) for v in df_sel[teilnehmer[0]] if str(v) != "NaN"),
+            teilnehmer[1]: sum(Decimal(str(v)) for v in df_sel[teilnehmer[1]] if str(v) != "NaN")
+        }
+        sum_diff = sum(Decimal(str(v)) for v in df_sel["Diff"] if str(v) != "NaN")
 
-        # Hier der Quotient: Summe(Spieler1) / Summe(Spieler2)
-        if sum_spieler_2 != 0:
-            quot_sum = (sum_spieler_1 / sum_spieler_2).quantize(Decimal("0.001"), rounding=ROUND_HALF_UP)
+        # Quotient = Summe Spieler1 / Summe Spieler2, Zeilen mit NaN überspringen
+        valid_rows = [(Decimal(str(a)), Decimal(str(b))) for a, b in zip(df_sel[teilnehmer[0]], df_sel[teilnehmer[1]]) if str(a) != "NaN" and str(b) != "NaN"]
+
+        if valid_rows:
+            sum_valid_1 = sum(a for a, _ in valid_rows)
+            sum_valid_2 = sum(b for _, b in valid_rows)
+            if sum_valid_2 != 0:
+                quot_sum = (sum_valid_1 / sum_valid_2).quantize(Decimal("0.001"), rounding=ROUND_HALF_UP)
+            else:
+                quot_sum = Decimal("NaN")
         else:
             quot_sum = Decimal("NaN")
 
+
+        # Zusammenfassung als Strings
         df_sum = pd.DataFrame({
             "Stadt": [city],
-            "Tage": [tage_str],
+            "Tage": [df_sel["Tage"].iloc[0]],
             "Variable": [var_name],
-            teilnehmer[0]: [sum_spieler_1.quantize(Decimal("0.001"), rounding=ROUND_HALF_UP)],
-            teilnehmer[1]: [sum_spieler_2.quantize(Decimal("0.001"), rounding=ROUND_HALF_UP)],
-            "Diff": [sum_diff.quantize(Decimal("0.001"), rounding=ROUND_HALF_UP)],
-            "Quot in %": [quot_sum* Decimal("100.0")]
+            teilnehmer[0]: [str(sum_spieler[teilnehmer[0]].quantize(Decimal("0.001"), rounding=ROUND_HALF_UP))],
+            teilnehmer[1]: [str(sum_spieler[teilnehmer[1]].quantize(Decimal("0.001"), rounding=ROUND_HALF_UP))],
+            "Diff": [str(sum_diff.quantize(Decimal("0.001"), rounding=ROUND_HALF_UP))],
+            "Quot in %": [str(quot_sum * Decimal("100"))]
         })
 
         results.append(df_sum)
@@ -949,46 +968,31 @@ if args.quotient or cfg.quotienten_berechnen:
         df_new = pd.concat(results, ignore_index=True).sort_values(by="Stadt").reset_index(drop=True)
 
         if os.path.exists(output_file):
-            df_existing = pd.read_excel(output_file)
+            df_existing = pd.read_excel(output_file, dtype=str)
             df_final = pd.concat([df_existing, df_new], ignore_index=True)
         else:
             df_final = df_new
 
-        # Excel-Datei
-        df_final.to_excel(output_file, index=False)
+        # Strings in Excel speichern
+        df_final.to_excel(output_file, index=False, engine="openpyxl")
         if verbose:
             print("Gesamtergebnisse gespeichert:", output_file)
 
-        # Dezimal-Excel-Datei (alle Zahlen als exakte Strings)
-        df_decimal = df_final.applymap(lambda x: str(x) if isinstance(x, Decimal) else x)
-        decimal_output_file = output_file.replace(".xlsx", "_decimal.xlsx")
-        df_decimal.to_excel(decimal_output_file, index=False)
-        if verbose:
-            print("Exakte Dezimalwerte gespeichert:", decimal_output_file)
-
-        # Tageswerte
         df_daily = pd.concat(daily_results, ignore_index=True)
-
         if os.path.exists(daily_output_file):
-            df_existing_daily = pd.read_excel(daily_output_file)
+            df_existing_daily = pd.read_excel(daily_output_file, dtype=str)
             df_daily_final = pd.concat([df_existing_daily, df_daily], ignore_index=True)
         else:
             df_daily_final = df_daily
 
-        df_daily_final.to_excel(daily_output_file, index=False)
+        df_daily_final.to_excel(daily_output_file, index=False, engine="openpyxl")
         if verbose:
             print("Tageswerte gespeichert:", daily_output_file)
-
-        # Dezimal-Variante der Tageswerte
-        df_daily_decimal = df_daily_final.applymap(lambda x: str(x) if isinstance(x, Decimal) else x)
-        daily_decimal_output = daily_output_file.replace(".xlsx", "_decimal.xlsx")
-        df_daily_decimal.to_excel(daily_decimal_output, index=False)
-        if verbose:
-            print("Exakte Tageswerte gespeichert:", daily_decimal_output)
-
     else:
         if verbose:
             print("Keine Ergebnisse zum Speichern vorhanden.")
+
+
 
 
 
