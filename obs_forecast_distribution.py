@@ -12,7 +12,7 @@ import re
 import matplotlib.pyplot as plt
 from matplotlib.ticker import FixedLocator
 from scipy.stats import linregress
-from decimal import Decimal, localcontext, ROUND_HALF_EVEN, InvalidOperation
+from decimal import Decimal, getcontext, ROUND_HALF_UP, ROUND_HALF_EVEN, InvalidOperation, localcontext
 from openpyxl import Workbook, load_workbook
 from openpyxl.styles import PatternFill
 import time
@@ -357,7 +357,6 @@ def export_to_excel(combined_data, counts, values_by_bin, elemente_namen, interv
 
 
 # ------------------- ASCII Export ------------------- #
-# ------------------- ASCII Export ------------------- #
 def export_to_ascii(combined_data, values_by_bin, elemente_namen, intervals_cfg, day_name, col_bias_list):
     """
     Exportiert die Verteilungen als ASCII-Dateien.
@@ -434,12 +433,6 @@ def export_to_ascii(combined_data, values_by_bin, elemente_namen, intervals_cfg,
 
 
 
-
-
-
-
-
-
 # ------------------- Plots ------------------- #
 # Hier kommen die Plots. Hier habe ich die individuelle Skalierung für jeden Parameter eingefügt unter den vielen if's.
 # Dann habe ich noch den dd12 Plot für jede Stadt als Polarkoordinatenplot hinzugefügt mit verschiedene Farben für die
@@ -452,7 +445,11 @@ outdir = 'distribution_outputs'
 plot_outdir = os.path.join(outdir, "plots")
 os.makedirs(plot_outdir, exist_ok=True)
 
-# ------------------- Achsen-Konfiguration ------------------- #
+# ------------------- YAML laden ------------------- #
+with open("cfg.yml") as f:
+    cfg_yaml = yaml.safe_load(f)
+
+# ------------------- Hilfsfunktion Achsen ------------------- #
 axis_cfg = {
     "sd1":   {"lims": (0, 60), "ticks": 10},
     "sd24":  {"lims": (0, 100), "ticks": 20},
@@ -463,19 +460,6 @@ axis_cfg = {
     "td12":  {"lims": (-15, 25), "ticks": 5},
 }
 
-si_unit = cfg.elemente_einheiten_neu#{
-    #"sd1": "min",
-    #"sd24": "min",
-    #"ff12": "m/s",
-    #"fx24": "m/s",
-    #"tmin": "°C",
-    #"tmax": "°C",
-    #"td12": "°C",
-    #"dd12": "°",
-    # Weitere Parameter ggf. ergänzen
-#}
-
-# ------------------- Hilfsfunktion Achsen ------------------- #
 def set_axis(ax, param, obs_vals, fcast_vals):
     param_lower = param.lower()
     if param_lower in ["rr1", "rr24"]:
@@ -496,9 +480,19 @@ def set_axis(ax, param, obs_vals, fcast_vals):
             ax.yaxis.set_major_locator(FixedLocator(ticks))
 
 # ------------------- Scatter- und Windrosenplots ------------------- #
-def plot_parameter_scatter(combined_data, param, selected_days, day_name, plot_outdir, param_to_si_map):
+def plot_parameter_scatter(combined_data, param, selected_days, day_name, plot_outdir, cfg_yaml):
     obs_vals, fcast_vals = [], []
 
+    # --- Einheit aus YAML ermitteln ---
+    param_lower = param.lower()
+    elemente_neu = [e.lower() for e in cfg_yaml['elemente']['elemente_archiv_neu']]
+    elemente_units = cfg_yaml['elemente']['elemente_einheiten_neu']
+    if param_lower in elemente_neu:
+        si_unit = elemente_units[elemente_neu.index(param_lower)]
+    else:
+        si_unit = ""  # Fallback
+
+    # --- Beobachtungen & Forecasts sammeln ---
     for city_data in combined_data.values():
         for betdate, data in city_data.items():
             if betdate not in selected_days:
@@ -520,22 +514,22 @@ def plot_parameter_scatter(combined_data, param, selected_days, day_name, plot_o
     obs_vals = np.array(obs_vals)
     fcast_vals = np.array(fcast_vals)
 
-    # Regression
+    # --- Regression ---
     slope, intercept, r_value, _, _ = linregress(obs_vals, fcast_vals)
 
-    # Frequenz pro Punkt
+    # --- Frequenz pro Punkt ---
     pairs = np.column_stack((obs_vals, fcast_vals))
     uniq_pairs, idx, counts = np.unique(pairs, axis=0, return_inverse=True, return_counts=True)
     freqs = counts[idx]
 
-    # Windrosen für dd12
-    if param.lower() == "dd12":
+    # --- Windrosen für dd12 ---
+    if param_lower == "dd12":
         obs_dirs_rad = np.deg2rad(obs_vals)
         fcast_dirs_rad = np.deg2rad(fcast_vals)
 
         fig = plt.figure(figsize=(8, 8))
         ax = fig.add_subplot(111, polar=True)
-        n_bins = 36  # z. B. 10° Intervalle
+        n_bins = 12  # 30° Intervalle
         ax.hist(obs_dirs_rad, bins=n_bins, range=(0, 2*np.pi), alpha=0.6, color="blue", label="Obs")
         ax.hist(fcast_dirs_rad, bins=n_bins, range=(0, 2*np.pi), alpha=0.6, color="red", label="Forecast")
 
@@ -544,23 +538,28 @@ def plot_parameter_scatter(combined_data, param, selected_days, day_name, plot_o
         plt.legend()
         plt.title(f"Wind direction distribution of {param}")
 
+        # Gemeinsamer Ordner für alle Städte
+        city_names_combined = "_".join(combined_data.keys())
+        city_dir = os.path.join(plot_outdir, city_names_combined)
+        os.makedirs(city_dir, exist_ok=True)
+
         for ext in ["png", "svg"]:
-            plt.savefig(
-                os.path.join(plot_outdir, f"windrose_{param}_{day_name}.{ext}"),
-                dpi=300,
-                bbox_inches='tight',
-                pad_inches=0
-            )
+            plt.savefig(os.path.join(city_dir, f"windrose_{param}_{day_name}.{ext}"),
+                        dpi=300, bbox_inches='tight', pad_inches=0)
         plt.close(fig)
         print(f"Windrosenplot gespeichert für {param}")
         return
 
-    # Scatterplot
+    # --- Scatterplot ---
     fig, ax = plt.subplots(figsize=(12, 8))
     set_axis(ax, param, obs_vals, fcast_vals)
 
     sc = ax.scatter(obs_vals, fcast_vals, c=freqs, s=50, cmap="coolwarm",
                     alpha=0.7, vmin=freqs.min(), vmax=freqs.max(), clip_on=False)
+
+    # Frequenzen als kleine Zahlen **in die Punkte**
+    for (x, y, f) in zip(obs_vals, fcast_vals, freqs):
+        ax.text(x, y, str(f), fontsize=6, ha='center', va='center', color='black', weight='bold')
 
     cbar = plt.colorbar(sc, ax=ax)
     cbar.set_label("Frequency (number of points)")
@@ -571,7 +570,6 @@ def plot_parameter_scatter(combined_data, param, selected_days, day_name, plot_o
     ax.plot([lims[0], lims[1]], [intercept + slope*lims[0], intercept + slope*lims[1]],
             'r-', label=rf"y={slope:.2f}x+{intercept:.2f}, $R^2={r_value**2:.2f}$")
 
-    #si_unit = param_to_si_map#.get(param, "")
     ax.set_xlabel(f"Observation ({param}) [{si_unit}]")
     ax.set_ylabel(f"Forecast ({param}) [{si_unit}]")
     day_str = day_name if day_name in ["Sat", "Sun"] else "all days"
@@ -580,38 +578,17 @@ def plot_parameter_scatter(combined_data, param, selected_days, day_name, plot_o
     ax.grid(True)
     ax.legend()
 
+    # --- Gemeinsamer Ordner für alle Städte ---
+    city_names_combined = "_".join(combined_data.keys())
+    city_dir = os.path.join(plot_outdir, city_names_combined)
+    os.makedirs(city_dir, exist_ok=True)
+
     for ext in ["png", "svg"]:
-        plt.savefig(
-            os.path.join(plot_outdir, f"scatter_{param}_{day_name}.{ext}"),
-            dpi=300,
-            bbox_inches='tight',
-            pad_inches=0
-        )
+        plt.savefig(os.path.join(city_dir, f"scatter_{param}_{day_name}.{ext}"),
+                    dpi=300, bbox_inches='tight', pad_inches=0)
+
     plt.close(fig)
     print(f"Scatterplot gespeichert für {param}, Punkte: {len(obs_vals)}, Unique: {len(uniq_pairs)}")
-    
-def get_values_per_day(combined_data, elemente_namen):
-    """
-    Gibt die einzelnen Obs- und Forecastwerte für jeden Tag zurück.
-    Struktur: {param: {day: {'obs': [...], 'forecast': {user: [...]}}}}
-    """
-    result = {param: {} for param in elemente_namen}
-
-    for param in elemente_namen:
-        for city, city_data in combined_data.items():
-            for betdate, data in city_data.items():
-                day_dict = result[param].setdefault(betdate, {'obs': [], 'forecast': defaultdict(list)})
-                # Beobachtungen
-                obs_vals = data['o'].get(param, [])
-                day_dict['obs'].extend([v for v in obs_vals if v is not None])
-                # Forecasts pro Nutzer
-                for user, fvals in data['f'].items():
-                    fcast_val = fvals.get(param)
-                    if fcast_val is not None:
-                        day_dict['forecast'][user].append(fcast_val)
-
-    return result
-
 
 # ------------------- Main-Funktion ------------------- #
 def main():
@@ -665,27 +642,19 @@ def main():
     export_to_excel(combined_data, counts, values_by_bin, elemente_namen, intervals_cfg)
     col_bias_list = export_to_excel(combined_data, counts, values_by_bin, elemente_namen, intervals_cfg)
 
-
     export_to_ascii(
-    combined_data,
-    values_by_bin,
-    elemente_namen,
-    intervals_cfg,
-    day_name="Sun",
-    col_bias_list=col_bias_list
+        combined_data,
+        values_by_bin,
+        elemente_namen,
+        intervals_cfg,
+        day_name=ps.days,
+        col_bias_list=col_bias_list
     )
-
-
 
     # --- Plots ---
     for param in elemente_namen:
         plot_parameter_scatter(
-            combined_data,
-            param,
-            selected_days,
-            day_name="Sun",
-            plot_outdir=plot_outdir,
-            param_to_si_map=si_unit
+            combined_data, param, selected_days, ps.days, plot_outdir, cfg_yaml
         )
 
     end = time.time()
@@ -693,6 +662,12 @@ def main():
 
 if __name__ == "__main__":
     main()
+
+
+
+
+
+
 
 
 
